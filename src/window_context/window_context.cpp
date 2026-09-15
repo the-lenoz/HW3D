@@ -1,6 +1,7 @@
 module;
 
 #define GLFW_INCLUDE_NONE
+#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
 #include <array>
@@ -74,9 +75,28 @@ public:
         }
 
         glfwMakeContextCurrent(window_);
+
+        if (gladLoadGL(
+                reinterpret_cast<GLADloadfunc>(glfwGetProcAddress)) == 0) {
+            glfwDestroyWindow(window_);
+            window_ = nullptr;
+            window_context_exists = false;
+            glfwTerminate();
+            throw std::runtime_error("failed to initialize GLAD");
+        }
+
         glfwSwapInterval(1);
         glfwSetWindowUserPointer(window_, this);
         glfwSetKeyCallback(window_, &Impl::on_key);
+        glfwSetFramebufferSizeCallback(window_, &Impl::on_framebuffer_size);
+
+        int framebuffer_width{};
+        int framebuffer_height{};
+        glfwGetFramebufferSize(
+            window_,
+            &framebuffer_width,
+            &framebuffer_height);
+        glViewport(0, 0, framebuffer_width, framebuffer_height);
     }
 
     ~Impl()
@@ -98,8 +118,8 @@ public:
     void run(const WindowCallback frame_callback)
     {
         while (glfwWindowShouldClose(window_) == GLFW_FALSE) {
-            if (frame_callback != nullptr) {
-                frame_callback();
+            if (frame_callback.function != nullptr) {
+                frame_callback.function(frame_callback.context);
             }
 
             glfwSwapBuffers(window_);
@@ -153,11 +173,20 @@ private:
         }
     }
 
+    static void on_framebuffer_size(
+        GLFWwindow*,
+        const int width,
+        const int height) noexcept
+    {
+        glViewport(0, 0, width, height);
+    }
+
     void invoke(const ArrowKey key) noexcept
     {
-        const WindowCallback callback = arrow_callbacks_[arrow_index(key)];
-        if (callback != nullptr) {
-            callback();
+        const auto [function, context] =
+            arrow_callbacks_[arrow_index(key)];
+        if (function != nullptr) {
+            function(context);
         }
     }
 

@@ -23,24 +23,27 @@ HW3D читает набор треугольников в трёхмерном 
 - пять C++-модулей, подключённых к цели `hw3d`;
 - чтение и проверка входных данных в `hw3d.configuration`;
 - инициализация GLFW, создание окна и OpenGL 4.6 Core context;
+- загрузка OpenGL 4.6 Core API через GLAD;
 - цикл событий и кадров, завершающийся по `Esc` или закрытию окна;
 - регистрация отдельных callback-функций для четырёх стрелок;
 - импорт и связывание существующих модулей в `main.cpp`;
-- пустые callback-функции движения камеры и кадра в renderer-модуле;
+- загрузка треугольников из конфигурации в VAO/VBO;
+- компиляция vertex/fragment shaders и отрисовка всех треугольников ровным серым цветом;
+- перспективная камера без поворота с движением вперёд, назад, влево и вправо;
 - пустой GLSL compute shader как место для будущей GPU-реализации.
 
 Пока не реализовано:
 
-- OpenGL loader;
-- фактическое изменение камеры зарегистрированными callback-функциями;
-- загрузка, компиляция и запуск шейдеров;
-- отрисовка треугольников;
+- освещение и материалы;
+- окрашивание пересекающихся треугольников красным;
+- поворот камеры;
+- загрузка, компиляция и запуск compute shader;
 - поиск пересечений на CPU и GPU;
 - выбор вычислительного backend;
 - тесты;
-- сборка или копирование GLSL-файлов средствами CMake.
+- сборка или копирование compute shader средствами CMake.
 
-CPU- и GPU-модули сейчас намеренно содержат только объявления `export module` и `module`. Renderer экспортирует функции, но их тела пока пусты. Не следует считать наличие файла или API признаком реализованного графического поведения.
+CPU- и GPU-модули сейчас намеренно содержат только объявления `export module` и `module`. Базовый renderer реализован, но пока не использует результаты поиска пересечений.
 
 ## Структура репозитория
 
@@ -60,7 +63,10 @@ HW3D/
     │   └── window_context.cpp
     ├── renderer/
     │   ├── renderer.cppm
-    │   └── renderer.cpp
+    │   ├── renderer.cpp
+    │   └── shaders/
+    │       ├── triangle.vert.glsl
+    │       └── triangle.frag.glsl
     ├── cpu_intersections/
     │   ├── cpu_intersections.cppm
     │   └── cpu_intersections.cpp
@@ -75,9 +81,13 @@ HW3D/
 
 ## Сборка
 
-Минимальная версия CMake — 3.28. Используется C++23 без compiler extensions. Компилятор должен поддерживать C++ modules и сканирование их зависимостей средствами CMake. Интерфейсы модулей перечисляются в `FILE_SET` типа `CXX_MODULES`; обычные единицы трансляции перечисляются как `PRIVATE` sources цели `hw3d`.
+Минимальная версия CMake — 3.28. Корневой проект включает языки C и C++: C нужен сгенерированной CMake-целью GLAD, собственный код использует C++23 без compiler extensions. Компилятор должен поддерживать C++ modules и сканирование их зависимостей средствами CMake. Интерфейсы модулей перечисляются в `FILE_SET` типа `CXX_MODULES`; обычные единицы трансляции перечисляются как `PRIVATE` sources цели `hw3d`.
 
-Конфигурация требует установленные GLFW версии не ниже 3.3 и OpenGL. Они находятся через `find_package(glfw3 3.3 REQUIRED)` и `find_package(OpenGL REQUIRED)`, затем цель связывается с `glfw` и `OpenGL::GL`. OpenGL loader пока не подключён.
+Конфигурация требует установленные GLFW версии не ниже 3.3 и OpenGL. Они находятся через `find_package(glfw3 3.3 REQUIRED)` и `find_package(OpenGL REQUIRED)`.
+
+GLAD 2.0.8 подключается только через CMake `FetchContent` из официального репозитория. После `FetchContent_MakeAvailable` подключается официальный CMake helper и создаётся статическая цель `hw3d_glad` для `gl:core=4.6` без extensions. Сгенерированные GLAD-файлы находятся только внутри build-каталога и не хранятся в исходном дереве. Первичная конфигурация требует Git, Python interpreter и доступ к GitHub; `REPRODUCIBLE` запрещает генератору скачивать актуальную Khronos specification поверх зафиксированной версии зависимости.
+
+Цель `hw3d` связывается с `hw3d_glad`, `glfw` и `OpenGL::GL`. Renderer shaders копируются на стадии конфигурации в `${CMAKE_CURRENT_BINARY_DIR}/shaders/renderer`; абсолютный build-путь передаётся реализации через приватное определение `HW3D_RENDERER_SHADER_DIR`.
 
 Основные команды:
 
@@ -111,14 +121,16 @@ cmake --build --preset release
 
 ```text
 stdin -> Configuration
-      -> WindowContext создаёт окно и активный GL context
+      -> WindowContext создаёт окно, активный GL context и загружает GLAD
+      -> Renderer компилирует shaders и загружает triangles в VAO/VBO
       -> main регистрирует renderer callbacks на стрелки
       -> WindowContext::run(render_frame)
+      -> Renderer очищает buffers и рисует GL_TRIANGLES каждый кадр
       -> Esc/закрытие окна завершает цикл
-      -> RAII уничтожает окно и завершает GLFW
+      -> RAII сначала освобождает renderer, затем окно и GLFW
 ```
 
-Целевой поток данных после реализации вычислений и renderer:
+Целевой поток данных после реализации вычислений пересечений:
 
 ```text
 stdin
@@ -160,7 +172,7 @@ xN2 yN2 zN2
 xN3 yN3 zN3
 ```
 
-Ограничение: `0 < N < 1'000'000`. После `N` для каждого треугольника должны присутствовать девять координат типа `double`. Разделителями могут быть любые пробельные символы, поэтому пустые строки не имеют особого значения.
+Ограничение: `0 < N < 1'000'000`. После `N` для каждого треугольника должны присутствовать девять координат типа `float`. Разделителями могут быть любые пробельные символы, поэтому пустые строки не имеют особого значения.
 
 Текущий parser:
 
@@ -183,9 +195,9 @@ xN3 yN3 zN3
 
 ```cpp
 struct Vec3 {
-    double x;
-    double y;
-    double z;
+    float x;
+    float y;
+    float z;
 };
 
 struct Triangle {
@@ -214,7 +226,12 @@ struct Configuration {
 ```cpp
 enum class ArrowKey { up, down, left, right };
 
-using WindowCallback = void (*)() noexcept;
+using WindowCallbackFunction = void (*)(void*) noexcept;
+
+struct WindowCallback {
+    WindowCallbackFunction function = nullptr;
+    void* context = nullptr;
+};
 
 class WindowContext final {
 public:
@@ -222,7 +239,7 @@ public:
     ~WindowContext();
 
     void register_arrow_callback(ArrowKey, WindowCallback) noexcept;
-    void run(WindowCallback frame_callback = nullptr);
+    void run(WindowCallback frame_callback = {});
     void request_close() noexcept;
 
     // Копирование и перемещение запрещены.
@@ -234,16 +251,17 @@ public:
 - одновременно допускается только один живой `WindowContext`;
 - создание, регистрация callback-функций, `run()` и уничтожение выполняются в одном главном потоке приложения;
 - размеры должны быть положительными, а `title` — не `nullptr`;
-- constructor инициализирует GLFW, запрашивает OpenGL 4.6 Core Forward-Compatible context, создаёт окно, делает context текущим и включает VSync через interval `1`;
+- constructor инициализирует GLFW, запрашивает OpenGL 4.6 Core Forward-Compatible context, создаёт окно, делает context текущим, загружает GLAD и включает VSync через interval `1`;
 - ошибки аргументов, повторный экземпляр, ошибка GLFW и ошибка создания окна сообщаются исключениями;
-- callback — указатель на функцию без аргументов с гарантией `noexcept`; `nullptr` означает отсутствие обработчика;
+- callback состоит из `noexcept`-функции с аргументом `void*` и непрозрачного context pointer; `function == nullptr` означает отсутствие обработчика;
 - callback соответствующей стрелки вызывается на `GLFW_PRESS` и `GLFW_REPEAT`, но не на отпускание клавиши;
 - `Esc` выставляет GLFW window-close flag; отдельного exit-callback нет;
 - `run()` вызывает frame callback, меняет front/back buffers и обрабатывает события, пока window-close flag не установлен;
 - `request_close()` позволяет выставить тот же флаг программно;
+- framebuffer-size callback обновляет OpenGL viewport, включая первоначальный размер framebuffer;
 - destructor уничтожает окно и вызывает `glfwTerminate()`.
 
-Callback-функции обязаны быть `noexcept`, потому что GLFW вызывает клавиатурный trampoline через C API. Окно не владеет переданными callback-функциями; указатели должны оставаться валидными до завершения event loop.
+Callback-функции обязаны быть `noexcept`, потому что GLFW вызывает клавиатурный trampoline через C API. Окно не владеет функцией или объектом по context pointer; оба должны оставаться валидными до завершения event loop.
 
 Ответственность модуля:
 
@@ -261,17 +279,46 @@ Callback-функции обязаны быть `noexcept`, потому что 
 
 Файлы: `src/renderer/renderer.cppm` и `src/renderer/renderer.cpp`.
 
-Текущее состояние: графическая отрисовка и состояние камеры ещё не реализованы. Модуль экспортирует callback-ready функции:
+Модуль импортирует `hw3d.configuration`, скрывает OpenGL-типы за PImpl и экспортирует следующий основной API:
 
 ```cpp
-void move_camera_up() noexcept;
-void move_camera_down() noexcept;
-void move_camera_left() noexcept;
-void move_camera_right() noexcept;
-void render_frame() noexcept;
+class Renderer final {
+public:
+    explicit Renderer(const Configuration& configuration);
+    ~Renderer();
+
+    void render() noexcept;
+    void move_forward() noexcept;
+    void move_back() noexcept;
+    void move_left() noexcept;
+    void move_right() noexcept;
+
+    // Копирование и перемещение запрещены.
+};
+
+void render_frame(void* renderer) noexcept;
+void move_camera_forward(void* renderer) noexcept;
+void move_camera_back(void* renderer) noexcept;
+void move_camera_left(void* renderer) noexcept;
+void move_camera_right(void* renderer) noexcept;
 ```
 
-Все пять функций сейчас имеют пустые тела. Четыре `move_camera_*` напрямую регистрируются в window context из `main.cpp`; `render_frame` передаётся в `WindowContext::run()`.
+Все пять свободных функций являются адаптерами для `WindowCallback`: при ненулевом указателе они вызывают соответствующий метод `Renderer`, при `nullptr` ничего не делают.
+
+Constructor требует непустую конфигурацию, уже существующий активный OpenGL context и загруженный GLAD. При пустом наборе треугольников он бросает `std::invalid_argument`. Затем он:
+
+- разворачивает каждый `Triangle` в последовательность из девяти `float` без предположений о padding структур;
+- создаёт VAO и VBO и загружает вершины с `GL_STATIC_DRAW`;
+- читает скопированные vertex/fragment shader-файлы, компилирует их и линкует program;
+- сообщает ошибки чтения, компиляции, линковки и отсутствующий uniform через исключения;
+- включает depth test;
+- вычисляет bounding box сцены, ставит камеру по центру перед сценой и выбирает scale-dependent шаг движения и clipping planes.
+
+Каждый `render()` очищает color/depth buffers, строит perspective matrix с вертикальным FOV `60°`, строит view translation из позиции камеры, записывает `view_projection` uniform и вызывает `glDrawArrays(GL_TRIANGLES, ...)`. Собственная матричная математика использует column-major layout OpenGL; внешняя math-библиотека пока не нужна.
+
+Камера всегда смотрит вдоль отрицательной оси Z и не поворачивается. `move_forward` уменьшает Z, `move_back` увеличивает Z, а left/right изменяют X. Шаг равен 10% вычисленного радиуса сцены. Стрелки `Up`, `Down`, `Left`, `Right` привязаны соответственно к этим четырём операциям.
+
+Vertex shader применяет только `view_projection`. Fragment shader возвращает постоянный цвет `(0.55, 0.55, 0.55, 1.0)`, поэтому все треугольники пока отображаются одинаково серыми, без освещения.
 
 Целевая ответственность:
 
@@ -322,10 +369,11 @@ GPU backend требует активного OpenGL-контекста. Его 
 
 - импортирует все пять модулей;
 - вызывает `hw3d::read_configuration(std::cin)`;
-- пока не использует полученную конфигурацию;
 - создаёт окно `1280 x 720` с заголовком `HW3D`;
-- регистрирует `move_camera_up`, `move_camera_down`, `move_camera_left` и `move_camera_right` для соответствующих стрелок;
-- запускает event loop, передавая `render_frame` как frame callback;
+- создаёт `Renderer` из прочитанной конфигурации после создания активного GL context;
+- регистрирует `move_camera_forward`, `move_camera_back`, `move_camera_left` и `move_camera_right`, передавая адрес renderer как callback context;
+- запускает event loop с `render_frame` и тем же renderer context;
+- объявляет renderer после окна, поэтому при выходе renderer уничтожается первым и освобождает OpenGL-ресурсы при ещё активном context;
 - после штатного выхода из цикла возвращает `0`;
 - перехватывает `std::exception`, печатает `what()` в `stderr` и возвращает `1`.
 
@@ -339,7 +387,7 @@ GPU backend требует активного OpenGL-контекста. Его 
 - Renderer отвечает только за графические ресурсы и изображение сцены.
 - Window context отвечает за окно, контекст, event loop и маршрутизацию ввода, но не знает о renderer и камере.
 - `main.cpp` отвечает за связывание компонентов, но не содержит их внутренней логики.
-- Связь window context и renderer инвертирована через `WindowCallback`: окно вызывает зарегистрированные функции, не импортируя renderer.
+- Связь window context и renderer инвертирована через пару `WindowCallbackFunction + void*`: окно вызывает зарегистрированные функции, не импортируя renderer.
 - Callback-функции, переданные окну, не должны бросать исключения.
 - Нельзя размещать CPU-проверку пересечений внутри renderer или window context.
 - Нельзя дублировать типы `Vec3`, `Triangle` или контракт массива отметок в нескольких несовместимых вариантах.
@@ -359,7 +407,7 @@ cmake --build --preset debug
 printf '1\n0 0 0\n1 0 0\n0 1 0\n' | ./build/debug/hw3d
 ```
 
-Должно открыться окно `HW3D`. Стрелки вызывают пустые функции и пока не дают видимого эффекта. `Esc` должен штатно закрыть окно и завершить процесс с кодом `0`.
+Должно открыться окно `HW3D` с серыми треугольниками. Стрелки должны перемещать камеру без поворота, а `Esc` — штатно закрывать окно и завершать процесс с кодом `0`.
 
 Проверить parser без открытия окна можно некорректным вводом:
 

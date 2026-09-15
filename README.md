@@ -12,4 +12,4 @@ src/
 └── gpu_intersections/    # поиск пересечений на GPU и GLSL
 ```
 
-Сборка: CMake, Ninja, C++23 modules.
+Сборка: CMake, Ninja, C++23 modules, GLFW, OpenGL 4.6 и GLAD.

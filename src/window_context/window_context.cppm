@@ -13,7 +13,12 @@ enum class ArrowKey {
     right,
 };
 
-using WindowCallback = void (*)() noexcept;
+using WindowCallbackFunction = void (*)(void*) noexcept;
+
+struct WindowCallback {
+    WindowCallbackFunction function = nullptr;
+    void* context = nullptr;
+};
 
 class WindowContext final {
 public:
@@ -29,7 +34,7 @@ public:
         ArrowKey key,
         WindowCallback callback) noexcept;
 
-    void run(WindowCallback frame_callback = nullptr);
+    void run(WindowCallback frame_callback = {});
     void request_close() noexcept;
 
 private:

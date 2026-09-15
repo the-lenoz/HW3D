@@ -8,9 +8,9 @@ export module hw3d.configuration;
 export namespace hw3d {
 
 struct Vec3 {
-    double x;
-    double y;
-    double z;
+    float x;
+    float y;
+    float z;
 };
 
 struct Triangle {
@@ -26,4 +26,3 @@ struct Configuration {
 [[nodiscard]] Configuration read_configuration(std::istream& input);
 
 }
-
