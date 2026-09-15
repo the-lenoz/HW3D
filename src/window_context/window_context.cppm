@@ -14,9 +14,21 @@ enum class ArrowKey {
 };
 
 using WindowCallbackFunction = void (*)(void*) noexcept;
+using MovementCallbackFunction = void (*)(void*, float) noexcept;
+using MouseMoveCallbackFunction = void (*)(void*, float, float) noexcept;
 
 struct WindowCallback {
     WindowCallbackFunction function = nullptr;
+    void* context = nullptr;
+};
+
+struct MovementCallback {
+    MovementCallbackFunction function = nullptr;
+    void* context = nullptr;
+};
+
+struct MouseMoveCallback {
+    MouseMoveCallbackFunction function = nullptr;
     void* context = nullptr;
 };
 
@@ -32,7 +44,8 @@ public:
 
     void register_arrow_callback(
         ArrowKey key,
-        WindowCallback callback) noexcept;
+        MovementCallback callback) noexcept;
+    void register_mouse_move_callback(MouseMoveCallback callback) noexcept;
 
     void run(WindowCallback frame_callback = {});
     void request_close() noexcept;

@@ -1,5 +1,6 @@
 #include <exception>
 #include <iostream>
+#include <vector>
 
 import hw3d.configuration;
 import hw3d.window_context;
@@ -11,9 +12,13 @@ int main()
 {
     try {
         const auto configuration = hw3d::read_configuration(std::cin);
+        std::vector<bool> highlighted(
+            configuration.triangles.size(),
+            false);
+        
 
         hw3d::WindowContext window{1280, 720, "HW3D"};
-        hw3d::Renderer renderer{configuration};
+        hw3d::Renderer renderer{configuration.triangles, highlighted};
 
         window.register_arrow_callback(
             hw3d::ArrowKey::up,
@@ -27,6 +32,8 @@ int main()
         window.register_arrow_callback(
             hw3d::ArrowKey::right,
             {&hw3d::move_camera_right, &renderer});
+        window.register_mouse_move_callback(
+            {&hw3d::rotate_camera, &renderer});
 
         window.run({&hw3d::render_frame, &renderer});
         return 0;

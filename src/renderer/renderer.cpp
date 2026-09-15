@@ -23,6 +23,9 @@ namespace {
 using Matrix4 = std::array<float, 16>;
 
 constexpr float field_of_view_radians = 1.0471975512F;
+constexpr float initial_yaw_radians = -1.5707963268F;
+constexpr float maximum_pitch_radians = 1.5533430343F;
+constexpr float mouse_sensitivity = 0.002F;
 
 std::string read_text_file(const std::filesystem::path& path)
 {
@@ -149,29 +152,102 @@ Matrix4 perspective(
     };
 }
 
-Matrix4 view_translation(const Vec3& camera_position) noexcept
+Vec3 add(const Vec3& left, const Vec3& right) noexcept
+{
+    return {left.x + right.x, left.y + right.y, left.z + right.z};
+}
+
+Vec3 scale(const Vec3& vector, const float factor) noexcept
+{
+    return {vector.x * factor, vector.y * factor, vector.z * factor};
+}
+
+float dot(const Vec3& left, const Vec3& right) noexcept
+{
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+Vec3 cross(const Vec3& left, const Vec3& right) noexcept
 {
     return {
-        1.0F, 0.0F, 0.0F, 0.0F,
-        0.0F, 1.0F, 0.0F, 0.0F,
-        0.0F, 0.0F, 1.0F, 0.0F,
-        -camera_position.x,
-        -camera_position.y,
-        -camera_position.z,
+        left.y * right.z - left.z * right.y,
+        left.z * right.x - left.x * right.z,
+        left.x * right.y - left.y * right.x,
+    };
+}
+
+Vec3 normalize(const Vec3& vector) noexcept
+{
+    const float length = std::sqrt(dot(vector, vector));
+    return scale(vector, 1.0F / length);
+}
+
+Vec3 camera_direction(
+    const float yaw_radians,
+    const float pitch_radians) noexcept
+{
+    const float pitch_cosine = std::cos(pitch_radians);
+    return normalize({
+        std::cos(yaw_radians) * pitch_cosine,
+        std::sin(pitch_radians),
+        std::sin(yaw_radians) * pitch_cosine,
+    });
+}
+
+Matrix4 look_at(
+    const Vec3& camera_position,
+    const Vec3& direction) noexcept
+{
+    constexpr Vec3 world_up{0.0F, 1.0F, 0.0F};
+    const Vec3 forward = normalize(direction);
+    const Vec3 right = normalize(cross(forward, world_up));
+    const Vec3 up = cross(right, forward);
+
+    return {
+        right.x, up.x, -forward.x, 0.0F,
+        right.y, up.y, -forward.y, 0.0F,
+        right.z, up.z, -forward.z, 0.0F,
+        -dot(right, camera_position),
+        -dot(up, camera_position),
+        dot(forward, camera_position),
         1.0F,
     };
 }
 
-std::vector<float> triangle_vertices(const Configuration& configuration)
+std::vector<float> render_vertices(
+    const std::vector<Triangle>& triangles,
+    const std::vector<bool>& highlighted)
 {
-    std::vector<float> vertices;
-    vertices.reserve(configuration.triangles.size() * 9);
+    constexpr std::array<std::array<float, 3>, 3> barycentrics{{
+        {1.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+    }};
 
-    for (const Triangle& triangle : configuration.triangles) {
-        for (const Vec3 vertex : {triangle.a, triangle.b, triangle.c}) {
+    std::vector<float> vertices;
+    vertices.reserve(triangles.size() * 3 * 7);
+
+    for (std::size_t triangle_index = 0;
+         triangle_index < triangles.size();
+         ++triangle_index) {
+        const Triangle& triangle = triangles[triangle_index];
+        const std::array<Vec3, 3> positions{
+            triangle.a,
+            triangle.b,
+            triangle.c,
+        };
+
+        for (std::size_t vertex_index = 0; vertex_index < 3; ++vertex_index) {
+            const Vec3 vertex = positions[vertex_index];
+            const auto& barycentric = barycentrics[vertex_index];
             vertices.push_back(vertex.x);
             vertices.push_back(vertex.y);
             vertices.push_back(vertex.z);
+            vertices.insert(
+                vertices.end(),
+                barycentric.begin(),
+                barycentric.end());
+            vertices.push_back(highlighted[triangle_index] ? 1.0F : 0.0F);
         }
     }
 
@@ -180,12 +256,12 @@ std::vector<float> triangle_vertices(const Configuration& configuration)
 
 struct SceneBounds {
     Vec3 camera_position;
-    float movement_step;
+    float movement_speed;
     float near_plane;
     float far_plane;
 };
 
-SceneBounds scene_bounds(const Configuration& configuration) noexcept
+SceneBounds scene_bounds(const std::vector<Triangle>& triangles) noexcept
 {
     Vec3 minimum{
         std::numeric_limits<float>::max(),
@@ -196,7 +272,7 @@ SceneBounds scene_bounds(const Configuration& configuration) noexcept
         std::numeric_limits<float>::lowest(),
         std::numeric_limits<float>::lowest()};
 
-    for (const Triangle& triangle : configuration.triangles) {
+    for (const Triangle& triangle : triangles) {
         for (const Vec3 vertex : {triangle.a, triangle.b, triangle.c}) {
             minimum.x = std::min(minimum.x, vertex.x);
             minimum.y = std::min(minimum.y, vertex.y);
@@ -221,7 +297,7 @@ SceneBounds scene_bounds(const Configuration& configuration) noexcept
 
     return {
         .camera_position = {center.x, center.y, center.z + camera_distance},
-        .movement_step = radius * 0.1F,
+        .movement_speed = radius * 1.5F,
         .near_plane = std::max(0.01F, camera_distance - radius * 1.5F),
         .far_plane = camera_distance + radius * 2.5F,
     };
@@ -236,19 +312,27 @@ Renderer* renderer_from(void* const pointer) noexcept
 
 class Renderer::Impl final {
 public:
-    explicit Impl(const Configuration& configuration)
+    Impl(
+        const std::vector<Triangle>& triangles,
+        const std::vector<bool>& highlighted)
     {
-        if (configuration.triangles.empty()) {
+        if (triangles.empty()) {
             throw std::invalid_argument(
                 "renderer requires at least one triangle");
         }
+        if (triangles.size() != highlighted.size()) {
+            throw std::invalid_argument(
+                "triangle and highlight arrays must have equal sizes");
+        }
 
-        const std::vector<float> vertices = triangle_vertices(configuration);
-        vertex_count_ = static_cast<GLsizei>(vertices.size() / 3);
+        const std::vector<float> vertices = render_vertices(
+            triangles,
+            highlighted);
+        vertex_count_ = static_cast<GLsizei>(vertices.size() / 7);
 
-        const SceneBounds bounds = scene_bounds(configuration);
+        const SceneBounds bounds = scene_bounds(triangles);
         camera_position_ = bounds.camera_position;
-        movement_step_ = bounds.movement_step;
+        movement_speed_ = bounds.movement_speed;
         near_plane_ = bounds.near_plane;
         far_plane_ = bounds.far_plane;
 
@@ -277,9 +361,25 @@ public:
             3,
             GL_FLOAT,
             GL_FALSE,
-            3 * sizeof(float),
+            7 * sizeof(float),
             nullptr);
         glEnableVertexAttribArray(0);
+        glVertexAttribPointer(
+            1,
+            3,
+            GL_FLOAT,
+            GL_FALSE,
+            7 * sizeof(float),
+            reinterpret_cast<const void*>(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(
+            2,
+            1,
+            GL_FLOAT,
+            GL_FALSE,
+            7 * sizeof(float),
+            reinterpret_cast<const void*>(6 * sizeof(float)));
+        glEnableVertexAttribArray(2);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
@@ -312,7 +412,7 @@ public:
             aspect_ratio,
             near_plane_,
             far_plane_);
-        const Matrix4 view = view_translation(camera_position_);
+        const Matrix4 view = look_at(camera_position_, direction());
         const Matrix4 view_projection = multiply(projection, view);
 
         glUseProgram(program_);
@@ -326,40 +426,72 @@ public:
         glBindVertexArray(0);
     }
 
-    void move_forward() noexcept
+    void move_forward(const float delta_seconds) noexcept
     {
-        camera_position_.z -= movement_step_;
+        camera_position_ = add(
+            camera_position_,
+            scale(direction(), movement_speed_ * delta_seconds));
     }
 
-    void move_back() noexcept
+    void move_back(const float delta_seconds) noexcept
     {
-        camera_position_.z += movement_step_;
+        camera_position_ = add(
+            camera_position_,
+            scale(direction(), -movement_speed_ * delta_seconds));
     }
 
-    void move_left() noexcept
+    void move_left(const float delta_seconds) noexcept
     {
-        camera_position_.x -= movement_step_;
+        camera_position_ = add(
+            camera_position_,
+            scale(right(), -movement_speed_ * delta_seconds));
     }
 
-    void move_right() noexcept
+    void move_right(const float delta_seconds) noexcept
     {
-        camera_position_.x += movement_step_;
+        camera_position_ = add(
+            camera_position_,
+            scale(right(), movement_speed_ * delta_seconds));
+    }
+
+    void rotate(const float x_offset, const float y_offset) noexcept
+    {
+        yaw_radians_ += x_offset * mouse_sensitivity;
+        pitch_radians_ = std::clamp(
+            pitch_radians_ + y_offset * mouse_sensitivity,
+            -maximum_pitch_radians,
+            maximum_pitch_radians);
     }
 
 private:
+    Vec3 direction() const noexcept
+    {
+        return camera_direction(yaw_radians_, pitch_radians_);
+    }
+
+    Vec3 right() const noexcept
+    {
+        constexpr Vec3 world_up{0.0F, 1.0F, 0.0F};
+        return normalize(cross(direction(), world_up));
+    }
+
     GLuint program_{};
     GLuint vertex_array_{};
     GLuint vertex_buffer_{};
     GLint view_projection_location_{};
     GLsizei vertex_count_{};
     Vec3 camera_position_{};
-    float movement_step_{};
+    float movement_speed_{};
     float near_plane_{};
     float far_plane_{};
+    float yaw_radians_ = initial_yaw_radians;
+    float pitch_radians_{};
 };
 
-Renderer::Renderer(const Configuration& configuration)
-    : impl_(std::make_unique<Impl>(configuration))
+Renderer::Renderer(
+    const std::vector<Triangle>& triangles,
+    const std::vector<bool>& highlighted)
+    : impl_(std::make_unique<Impl>(triangles, highlighted))
 {
 }
 
@@ -370,24 +502,31 @@ void Renderer::render() noexcept
     impl_->render();
 }
 
-void Renderer::move_forward() noexcept
+void Renderer::move_forward(const float delta_seconds) noexcept
 {
-    impl_->move_forward();
+    impl_->move_forward(delta_seconds);
 }
 
-void Renderer::move_back() noexcept
+void Renderer::move_back(const float delta_seconds) noexcept
 {
-    impl_->move_back();
+    impl_->move_back(delta_seconds);
 }
 
-void Renderer::move_left() noexcept
+void Renderer::move_left(const float delta_seconds) noexcept
 {
-    impl_->move_left();
+    impl_->move_left(delta_seconds);
 }
 
-void Renderer::move_right() noexcept
+void Renderer::move_right(const float delta_seconds) noexcept
 {
-    impl_->move_right();
+    impl_->move_right(delta_seconds);
+}
+
+void Renderer::rotate(
+    const float x_offset,
+    const float y_offset) noexcept
+{
+    impl_->rotate(x_offset, y_offset);
 }
 
 void render_frame(void* const renderer) noexcept
@@ -397,31 +536,49 @@ void render_frame(void* const renderer) noexcept
     }
 }
 
-void move_camera_forward(void* const renderer) noexcept
+void move_camera_forward(
+    void* const renderer,
+    const float delta_seconds) noexcept
 {
     if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_forward();
+        instance->move_forward(delta_seconds);
     }
 }
 
-void move_camera_back(void* const renderer) noexcept
+void move_camera_back(
+    void* const renderer,
+    const float delta_seconds) noexcept
 {
     if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_back();
+        instance->move_back(delta_seconds);
     }
 }
 
-void move_camera_left(void* const renderer) noexcept
+void move_camera_left(
+    void* const renderer,
+    const float delta_seconds) noexcept
 {
     if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_left();
+        instance->move_left(delta_seconds);
     }
 }
 
-void move_camera_right(void* const renderer) noexcept
+void move_camera_right(
+    void* const renderer,
+    const float delta_seconds) noexcept
 {
     if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_right();
+        instance->move_right(delta_seconds);
+    }
+}
+
+void rotate_camera(
+    void* const renderer,
+    const float x_offset,
+    const float y_offset) noexcept
+{
+    if (Renderer* const instance = renderer_from(renderer)) {
+        instance->rotate(x_offset, y_offset);
     }
 }
 

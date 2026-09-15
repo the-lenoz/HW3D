@@ -11,7 +11,7 @@ HW3D читает набор треугольников в трёхмерном 
 - на CPU;
 - на GPU с помощью GLSL compute shader.
 
-Оба способа должны выдавать одинаковый по смыслу результат: массив длины `N` из `std::uint8_t`, где `0` означает, что треугольник не пересекается ни с одним другим, а `1` — что пересекается хотя бы с одним.
+Оба способа должны выдавать одинаковый по смыслу результат: `std::vector<bool>` длины `N`, где `false` означает, что треугольник не пересекается ни с одним другим, а `true` — что пересекается хотя бы с одним.
 
 ## Текущее состояние
 
@@ -28,15 +28,14 @@ HW3D читает набор треугольников в трёхмерном 
 - регистрация отдельных callback-функций для четырёх стрелок;
 - импорт и связывание существующих модулей в `main.cpp`;
 - загрузка треугольников из конфигурации в VAO/VBO;
-- компиляция vertex/fragment shaders и отрисовка всех треугольников ровным серым цветом;
-- перспективная камера без поворота с движением вперёд, назад, влево и вправо;
+- компиляция vertex/fragment shaders, серая окраска обычных и красная окраска отмеченных треугольников;
+- чёрная экранная кайма по рёбрам каждого треугольника;
+- perspective camera с захватом мыши, yaw/pitch-вращением и creative-flight перемещением;
 - пустой GLSL compute shader как место для будущей GPU-реализации.
 
 Пока не реализовано:
 
 - освещение и материалы;
-- окрашивание пересекающихся треугольников красным;
-- поворот камеры;
 - загрузка, компиляция и запуск compute shader;
 - поиск пересечений на CPU и GPU;
 - выбор вычислительного backend;
@@ -122,10 +121,12 @@ cmake --build --preset release
 ```text
 stdin -> Configuration
       -> WindowContext создаёт окно, активный GL context и загружает GLAD
-      -> Renderer компилирует shaders и загружает triangles в VAO/VBO
-      -> main регистрирует renderer callbacks на стрелки
+      -> main создаёт временный vector<bool>(N, false)
+      -> Renderer принимает triangles + flags, компилирует shaders и создаёт VAO/VBO
+      -> main регистрирует renderer callbacks на стрелки и мышь
       -> WindowContext::run(render_frame)
-      -> Renderer очищает buffers и рисует GL_TRIANGLES каждый кадр
+      -> WindowContext передаёт delta time движению, а mouse offsets вращению
+      -> Renderer очищает buffers и рисует заполнение с каймой каждый кадр
       -> Esc/закрытие окна завершает цикл
       -> RAII сначала освобождает renderer, затем окно и GLFW
 ```
@@ -137,7 +138,7 @@ stdin
   -> hw3d.configuration
   -> Configuration::triangles
   -> hw3d.cpu_intersections или hw3d.gpu_intersections
-  -> массив отметок std::uint8_t размером N
+  -> std::vector<bool> отметок размером N
   -> hw3d.renderer
   -> окно и OpenGL-контекст из hw3d.window_context
 ```
@@ -227,9 +228,21 @@ struct Configuration {
 enum class ArrowKey { up, down, left, right };
 
 using WindowCallbackFunction = void (*)(void*) noexcept;
+using MovementCallbackFunction = void (*)(void*, float) noexcept;
+using MouseMoveCallbackFunction = void (*)(void*, float, float) noexcept;
 
 struct WindowCallback {
     WindowCallbackFunction function = nullptr;
+    void* context = nullptr;
+};
+
+struct MovementCallback {
+    MovementCallbackFunction function = nullptr;
+    void* context = nullptr;
+};
+
+struct MouseMoveCallback {
+    MouseMoveCallbackFunction function = nullptr;
     void* context = nullptr;
 };
 
@@ -238,7 +251,8 @@ public:
     WindowContext(int width, int height, const char* title);
     ~WindowContext();
 
-    void register_arrow_callback(ArrowKey, WindowCallback) noexcept;
+    void register_arrow_callback(ArrowKey, MovementCallback) noexcept;
+    void register_mouse_move_callback(MouseMoveCallback) noexcept;
     void run(WindowCallback frame_callback = {});
     void request_close() noexcept;
 
@@ -253,15 +267,18 @@ public:
 - размеры должны быть положительными, а `title` — не `nullptr`;
 - constructor инициализирует GLFW, запрашивает OpenGL 4.6 Core Forward-Compatible context, создаёт окно, делает context текущим, загружает GLAD и включает VSync через interval `1`;
 - ошибки аргументов, повторный экземпляр, ошибка GLFW и ошибка создания окна сообщаются исключениями;
-- callback состоит из `noexcept`-функции с аргументом `void*` и непрозрачного context pointer; `function == nullptr` означает отсутствие обработчика;
-- callback соответствующей стрелки вызывается на `GLFW_PRESS` и `GLFW_REPEAT`, но не на отпускание клавиши;
+- все callback-контракты состоят из `noexcept`-функции и непрозрачного context pointer; `function == nullptr` означает отсутствие обработчика;
+- при создании окна cursor переводится в `GLFW_CURSOR_DISABLED`, поэтому мышь скрыта и захвачена окном; если GLFW поддерживает raw mouse motion, он также включается;
+- первое событие курсора только инициализирует предыдущую позицию, последующие передают `(x_offset, y_offset)`; положительный `y_offset` соответствует движению мыши вверх;
+- удерживаемые стрелки опрашиваются каждый кадр через `glfwGetKey`, а не через системный key-repeat;
+- movement callback получает `delta_seconds`; значение считается через `glfwGetTime` и ограничивается максимумом `0.1`, чтобы длинная пауза не вызвала скачок камеры;
 - `Esc` выставляет GLFW window-close flag; отдельного exit-callback нет;
-- `run()` вызывает frame callback, меняет front/back buffers и обрабатывает события, пока window-close flag не установлен;
+- `run()` обрабатывает события, вызывает callbacks удерживаемых стрелок, вызывает frame callback и меняет front/back buffers, пока window-close flag не установлен;
 - `request_close()` позволяет выставить тот же флаг программно;
 - framebuffer-size callback обновляет OpenGL viewport, включая первоначальный размер framebuffer;
 - destructor уничтожает окно и вызывает `glfwTerminate()`.
 
-Callback-функции обязаны быть `noexcept`, потому что GLFW вызывает клавиатурный trampoline через C API. Окно не владеет функцией или объектом по context pointer; оба должны оставаться валидными до завершения event loop.
+Callback-функции обязаны быть `noexcept`, потому что GLFW вызывает свои trampolines через C API. Окно не владеет функциями или объектами по context pointers; все они должны оставаться валидными до завершения event loop.
 
 Ответственность модуля:
 
@@ -271,6 +288,7 @@ Callback-функции обязаны быть `noexcept`, потому что 
 - обработка событий;
 - регистрация callback-функций GLFW;
 - маршрутизация клавиатурного ввода в зарегистрированные callback-функции;
+- захват мыши и маршрутизация относительного движения курсора;
 - предоставление безопасной точки вызова отрисовки при активном контексте.
 
 Этот модуль не должен вычислять пересечения и владеть алгоритмами рендеринга треугольников.
@@ -284,41 +302,51 @@ Callback-функции обязаны быть `noexcept`, потому что 
 ```cpp
 class Renderer final {
 public:
-    explicit Renderer(const Configuration& configuration);
+    Renderer(
+        const std::vector<Triangle>& triangles,
+        const std::vector<bool>& highlighted);
     ~Renderer();
 
     void render() noexcept;
-    void move_forward() noexcept;
-    void move_back() noexcept;
-    void move_left() noexcept;
-    void move_right() noexcept;
+    void move_forward(float delta_seconds) noexcept;
+    void move_back(float delta_seconds) noexcept;
+    void move_left(float delta_seconds) noexcept;
+    void move_right(float delta_seconds) noexcept;
+    void rotate(float x_offset, float y_offset) noexcept;
 
     // Копирование и перемещение запрещены.
 };
 
 void render_frame(void* renderer) noexcept;
-void move_camera_forward(void* renderer) noexcept;
-void move_camera_back(void* renderer) noexcept;
-void move_camera_left(void* renderer) noexcept;
-void move_camera_right(void* renderer) noexcept;
+void move_camera_forward(void* renderer, float delta_seconds) noexcept;
+void move_camera_back(void* renderer, float delta_seconds) noexcept;
+void move_camera_left(void* renderer, float delta_seconds) noexcept;
+void move_camera_right(void* renderer, float delta_seconds) noexcept;
+void rotate_camera(
+    void* renderer,
+    float x_offset,
+    float y_offset) noexcept;
 ```
 
-Все пять свободных функций являются адаптерами для `WindowCallback`: при ненулевом указателе они вызывают соответствующий метод `Renderer`, при `nullptr` ничего не делают.
+Свободные функции являются адаптерами для frame, movement и mouse callbacks окна: при ненулевом указателе они вызывают соответствующий метод `Renderer`, при `nullptr` ничего не делают.
 
-Constructor требует непустую конфигурацию, уже существующий активный OpenGL context и загруженный GLAD. При пустом наборе треугольников он бросает `std::invalid_argument`. Затем он:
+Constructor не принимает `Configuration`: его контракт состоит только из массива треугольников и параллельного массива отметок. Он требует существующий активный OpenGL context и загруженный GLAD, отклоняет пустой массив треугольников и несовпадающие размеры массивов через `std::invalid_argument`. Входные массивы нужны только на время constructor: renderer преобразует и копирует их в GPU buffer, но не хранит ссылки.
 
-- разворачивает каждый `Triangle` в последовательность из девяти `float` без предположений о padding структур;
+При подготовке данных constructor:
+
+- разворачивает каждый `Triangle` в три вершины по семь `float`: position `xyz`, barycentric `xyz` и highlight flag;
+- повторяет значение `highlighted[i]` для всех трёх вершин треугольника `i`;
 - создаёт VAO и VBO и загружает вершины с `GL_STATIC_DRAW`;
 - читает скопированные vertex/fragment shader-файлы, компилирует их и линкует program;
 - сообщает ошибки чтения, компиляции, линковки и отсутствующий uniform через исключения;
 - включает depth test;
 - вычисляет bounding box сцены, ставит камеру по центру перед сценой и выбирает scale-dependent шаг движения и clipping planes.
 
-Каждый `render()` очищает color/depth buffers, строит perspective matrix с вертикальным FOV `60°`, строит view translation из позиции камеры, записывает `view_projection` uniform и вызывает `glDrawArrays(GL_TRIANGLES, ...)`. Собственная матричная математика использует column-major layout OpenGL; внешняя math-библиотека пока не нужна.
+Каждый `render()` очищает color/depth buffers, строит perspective matrix с вертикальным FOV `60°`, строит look-at view matrix из позиции и направления камеры, записывает `view_projection` uniform и вызывает `glDrawArrays(GL_TRIANGLES, ...)`. Собственная векторно-матричная математика использует `float` и column-major layout OpenGL; внешняя math-библиотека пока не нужна.
 
-Камера всегда смотрит вдоль отрицательной оси Z и не поворачивается. `move_forward` уменьшает Z, `move_back` увеличивает Z, а left/right изменяют X. Шаг равен 10% вычисленного радиуса сцены. Стрелки `Up`, `Down`, `Left`, `Right` привязаны соответственно к этим четырём операциям.
+Камера начинает с yaw `-90°`, pitch `0°` и смотрит вдоль отрицательной оси Z. Mouse offsets изменяют yaw/pitch с чувствительностью `0.002` радиана на pixel; pitch ограничен диапазоном примерно `[-89°, 89°]`. Forward/back movement идёт вдоль полного направления взгляда, включая вертикальную составляющую: при взгляде вверх движение вперёд поднимает камеру как в creative flight. Left/right используют горизонтальный right vector. Скорость равна `1.5` радиуса сцены в секунду и умножается на переданный `delta_seconds`.
 
-Vertex shader применяет только `view_projection`. Fragment shader возвращает постоянный цвет `(0.55, 0.55, 0.55, 1.0)`, поэтому все треугольники пока отображаются одинаково серыми, без освещения.
+Vertex shader применяет `view_projection` и передаёт highlight flag и barycentric coordinates. Fragment shader выбирает серый `(0.55, 0.55, 0.55)` при `false` и красный `(0.85, 0.08, 0.08)` при `true`. Минимальная barycentric coordinate и `fwidth` формируют сглаженную чёрную кайму толщиной примерно `1.5` pixel по всем трём рёбрам. Освещение пока отсутствует.
 
 Целевая ответственность:
 
@@ -343,7 +371,7 @@ Renderer принимает готовые отметки и не определ
 - получение массива треугольников;
 - broad phase для сокращения числа точных проверок;
 - точная проверка оставшихся пар треугольников;
-- формирование массива отметок `0`/`1` длины `N`.
+- формирование `std::vector<bool>` отметок длины `N`.
 
 Наивный полный перебор всех пар имеет сложность `O(N^2)` и не подходит как окончательное решение при `N`, близком к миллиону. Геометрический код не должен зависеть от GLFW, OpenGL или renderer-модуля.
 
@@ -358,7 +386,7 @@ Renderer принимает готовые отметки и не определ
 - создание GPU buffers с геометрией и отметками;
 - компиляция и запуск GLSL compute shader;
 - корректная синхронизация compute-операций;
-- получение результата в том же логическом формате, что у CPU backend;
+- получение `std::vector<bool>` в том же логическом формате, что у CPU backend;
 - управление только теми OpenGL-ресурсами, которые относятся к вычислению пересечений.
 
 GPU backend требует активного OpenGL-контекста. Его C++ API не должен заставлять `main.cpp` или renderer знать детали work groups, shader storage buffers и синхронизации.
@@ -369,9 +397,11 @@ GPU backend требует активного OpenGL-контекста. Его 
 
 - импортирует все пять модулей;
 - вызывает `hw3d::read_configuration(std::cin)`;
+- создаёт временный `std::vector<bool>` длины `N`, заполненный `false`, пока вычислительные модули не реализованы;
 - создаёт окно `1280 x 720` с заголовком `HW3D`;
-- создаёт `Renderer` из прочитанной конфигурации после создания активного GL context;
+- создаёт `Renderer` из `configuration.triangles` и временных отметок после создания активного GL context;
 - регистрирует `move_camera_forward`, `move_camera_back`, `move_camera_left` и `move_camera_right`, передавая адрес renderer как callback context;
+- регистрирует `rotate_camera` как mouse-move callback с тем же context;
 - запускает event loop с `render_frame` и тем же renderer context;
 - объявляет renderer после окна, поэтому при выходе renderer уничтожается первым и освобождает OpenGL-ресурсы при ещё активном context;
 - после штатного выхода из цикла возвращает `0`;
@@ -381,13 +411,13 @@ GPU backend требует активного OpenGL-контекста. Его 
 
 ## Архитектурные границы
 
-- Формат результата CPU и GPU должен быть единым: ровно одна отметка `0` или `1` на входной треугольник, в исходном порядке.
+- Формат результата CPU и GPU должен быть единым: ровно одна отметка `bool` на входной треугольник, в исходном порядке.
 - Конфигурационный модуль отвечает только за представление и чтение входа.
 - Вычислительные модули отвечают только за обнаружение пересечений и формирование отметок.
 - Renderer отвечает только за графические ресурсы и изображение сцены.
 - Window context отвечает за окно, контекст, event loop и маршрутизацию ввода, но не знает о renderer и камере.
 - `main.cpp` отвечает за связывание компонентов, но не содержит их внутренней логики.
-- Связь window context и renderer инвертирована через пару `WindowCallbackFunction + void*`: окно вызывает зарегистрированные функции, не импортируя renderer.
+- Связь window context и renderer инвертирована через callback-функции и `void*` context: окно вызывает зарегистрированные функции, не импортируя renderer.
 - Callback-функции, переданные окну, не должны бросать исключения.
 - Нельзя размещать CPU-проверку пересечений внутри renderer или window context.
 - Нельзя дублировать типы `Vec3`, `Triangle` или контракт массива отметок в нескольких несовместимых вариантах.
@@ -407,7 +437,7 @@ cmake --build --preset debug
 printf '1\n0 0 0\n1 0 0\n0 1 0\n' | ./build/debug/hw3d
 ```
 
-Должно открыться окно `HW3D` с серыми треугольниками. Стрелки должны перемещать камеру без поворота, а `Esc` — штатно закрывать окно и завершать процесс с кодом `0`.
+Должно открыться окно `HW3D` с серыми треугольниками и чёрной каймой. Мышь должна быть захвачена и вращать камеру. Удержание стрелок должно непрерывно перемещать камеру относительно направления взгляда, а `Esc` — штатно закрывать окно и завершать процесс с кодом `0`. В текущем `main` все отметки равны `false`, поэтому красный цвет появится после подключения compute backend либо при прямом создании `Renderer` с отметкой `true`.
 
 Проверить parser без открытия окна можно некорректным вводом:
 
