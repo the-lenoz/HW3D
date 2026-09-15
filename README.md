@@ -5,6 +5,7 @@
 ```text
 src/
 ├── main.cpp
+├── configuration/        # чтение входных данных
 ├── window_context/       # GLFW-контекст и ввод
 ├── renderer/             # OpenGL-отрисовка
 ├── cpu_intersections/    # поиск пересечений на CPU
