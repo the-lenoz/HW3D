@@ -176,10 +176,14 @@ Vec3 cross(const Vec3& left, const Vec3& right) noexcept
     };
 }
 
+float length(const Vec3& vector) noexcept
+{
+    return std::sqrt(dot(vector, vector));
+}
+
 Vec3 normalize(const Vec3& vector) noexcept
 {
-    const float length = std::sqrt(dot(vector, vector));
-    return scale(vector, 1.0F / length);
+    return scale(vector, 1.0F / length(vector));
 }
 
 Vec3 camera_direction(
@@ -256,7 +260,12 @@ std::vector<float> render_vertices(
 
 struct SceneBounds {
     Vec3 camera_position;
+    Vec3 center;
+    float radius;
     float movement_speed;
+};
+
+struct ClipPlanes {
     float near_plane;
     float far_plane;
 };
@@ -287,19 +296,50 @@ SceneBounds scene_bounds(const std::vector<Triangle>& triangles) noexcept
         (minimum.x + maximum.x) * 0.5F,
         (minimum.y + maximum.y) * 0.5F,
         (minimum.z + maximum.z) * 0.5F};
-    const float radius = std::max({
+    const Vec3 half_extent{
         (maximum.x - minimum.x) * 0.5F,
         (maximum.y - minimum.y) * 0.5F,
-        (maximum.z - minimum.z) * 0.5F,
-        0.5F});
+        (maximum.z - minimum.z) * 0.5F};
+    const float radius = std::max(length(half_extent), 0.5F);
     const float camera_distance =
         radius / std::tan(field_of_view_radians * 0.5F) + radius;
 
     return {
         .camera_position = {center.x, center.y, center.z + camera_distance},
+        .center = center,
+        .radius = radius,
         .movement_speed = radius * 1.5F,
-        .near_plane = std::max(0.01F, camera_distance - radius * 1.5F),
-        .far_plane = camera_distance + radius * 2.5F,
+    };
+}
+
+ClipPlanes clip_planes(
+    const Vec3& camera_position,
+    const Vec3& scene_center,
+    const float scene_radius) noexcept
+{
+    constexpr float clipping_margin_factor = 1.1F;
+    constexpr float minimum_near_factor = 0.001F;
+    constexpr float absolute_minimum_near = 0.0001F;
+
+    const Vec3 camera_to_center{
+        scene_center.x - camera_position.x,
+        scene_center.y - camera_position.y,
+        scene_center.z - camera_position.z};
+    const float distance_to_center = length(camera_to_center);
+    const float padded_radius = scene_radius * clipping_margin_factor;
+    const float minimum_near = std::max(
+        scene_radius * minimum_near_factor,
+        absolute_minimum_near);
+    const float near_plane = std::max(
+        minimum_near,
+        distance_to_center - padded_radius);
+    const float far_plane = std::max(
+        distance_to_center + padded_radius,
+        std::nextafter(near_plane, std::numeric_limits<float>::max()));
+
+    return {
+        .near_plane = near_plane,
+        .far_plane = far_plane,
     };
 }
 
@@ -332,9 +372,9 @@ public:
 
         const SceneBounds bounds = scene_bounds(triangles);
         camera_position_ = bounds.camera_position;
+        scene_center_ = bounds.center;
+        scene_radius_ = bounds.radius;
         movement_speed_ = bounds.movement_speed;
-        near_plane_ = bounds.near_plane;
-        far_plane_ = bounds.far_plane;
 
         program_ = create_program();
         view_projection_location_ =
@@ -385,6 +425,7 @@ public:
         glBindVertexArray(0);
 
         glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
     }
 
     ~Impl()
@@ -408,10 +449,14 @@ public:
         const float aspect_ratio =
             static_cast<float>(viewport[2])
             / static_cast<float>(viewport[3]);
+        const ClipPlanes clipping = clip_planes(
+            camera_position_,
+            scene_center_,
+            scene_radius_);
         const Matrix4 projection = perspective(
             aspect_ratio,
-            near_plane_,
-            far_plane_);
+            clipping.near_plane,
+            clipping.far_plane);
         const Matrix4 view = look_at(camera_position_, direction());
         const Matrix4 view_projection = multiply(projection, view);
 
@@ -481,9 +526,9 @@ private:
     GLint view_projection_location_{};
     GLsizei vertex_count_{};
     Vec3 camera_position_{};
+    Vec3 scene_center_{};
+    float scene_radius_{};
     float movement_speed_{};
-    float near_plane_{};
-    float far_plane_{};
     float yaw_radians_ = initial_yaw_radians;
     float pitch_radians_{};
 };

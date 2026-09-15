@@ -12,10 +12,8 @@ int main()
 {
     try {
         const auto configuration = hw3d::read_configuration(std::cin);
-        std::vector<bool> highlighted(
-            configuration.triangles.size(),
-            false);
-        
+        const std::vector<bool> highlighted =
+            hw3d::cpu_collisions(configuration.triangles);
 
         hw3d::WindowContext window{1280, 720, "HW3D"};
         hw3d::Renderer renderer{configuration.triangles, highlighted};
