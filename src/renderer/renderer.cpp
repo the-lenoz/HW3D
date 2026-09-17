@@ -218,6 +218,27 @@ Matrix4 look_at(
     };
 }
 
+Vec3 triangle_normal(const Triangle& triangle) noexcept
+{
+    const Vec3 first_edge{
+        triangle.b.x - triangle.a.x,
+        triangle.b.y - triangle.a.y,
+        triangle.b.z - triangle.a.z};
+    const Vec3 second_edge{
+        triangle.c.x - triangle.a.x,
+        triangle.c.y - triangle.a.y,
+        triangle.c.z - triangle.a.z};
+    const Vec3 normal = cross(first_edge, second_edge);
+    const float normal_length = length(normal);
+
+    if (!std::isfinite(normal_length)
+        || normal_length <= std::numeric_limits<float>::epsilon()) {
+        return {0.0F, 1.0F, 0.0F};
+    }
+
+    return scale(normal, 1.0F / normal_length);
+}
+
 std::vector<float> render_vertices(
     const std::vector<Triangle>& triangles,
     const std::vector<bool>& highlighted)
@@ -229,7 +250,7 @@ std::vector<float> render_vertices(
     }};
 
     std::vector<float> vertices;
-    vertices.reserve(triangles.size() * 3 * 7);
+    vertices.reserve(triangles.size() * 3 * 10);
 
     for (std::size_t triangle_index = 0;
          triangle_index < triangles.size();
@@ -240,6 +261,7 @@ std::vector<float> render_vertices(
             triangle.b,
             triangle.c,
         };
+        const Vec3 normal = triangle_normal(triangle);
 
         for (std::size_t vertex_index = 0; vertex_index < 3; ++vertex_index) {
             const Vec3 vertex = positions[vertex_index];
@@ -252,6 +274,9 @@ std::vector<float> render_vertices(
                 barycentric.begin(),
                 barycentric.end());
             vertices.push_back(highlighted[triangle_index] ? 1.0F : 0.0F);
+            vertices.push_back(normal.x);
+            vertices.push_back(normal.y);
+            vertices.push_back(normal.z);
         }
     }
 
@@ -368,7 +393,7 @@ public:
         const std::vector<float> vertices = render_vertices(
             triangles,
             highlighted);
-        vertex_count_ = static_cast<GLsizei>(vertices.size() / 7);
+        vertex_count_ = static_cast<GLsizei>(vertices.size() / 10);
 
         const SceneBounds bounds = scene_bounds(triangles);
         camera_position_ = bounds.camera_position;
@@ -401,7 +426,7 @@ public:
             3,
             GL_FLOAT,
             GL_FALSE,
-            7 * sizeof(float),
+            10 * sizeof(float),
             nullptr);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(
@@ -409,7 +434,7 @@ public:
             3,
             GL_FLOAT,
             GL_FALSE,
-            7 * sizeof(float),
+            10 * sizeof(float),
             reinterpret_cast<const void*>(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(
@@ -417,9 +442,17 @@ public:
             1,
             GL_FLOAT,
             GL_FALSE,
-            7 * sizeof(float),
+            10 * sizeof(float),
             reinterpret_cast<const void*>(6 * sizeof(float)));
         glEnableVertexAttribArray(2);
+        glVertexAttribPointer(
+            3,
+            3,
+            GL_FLOAT,
+            GL_FALSE,
+            10 * sizeof(float),
+            reinterpret_cast<const void*>(7 * sizeof(float)));
+        glEnableVertexAttribArray(3);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);

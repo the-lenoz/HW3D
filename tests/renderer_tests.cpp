@@ -22,6 +22,18 @@ const std::vector<hw3d::Triangle> centered_triangle{{
     {0.0F, 1.0F, 0.0F},
 }};
 
+const std::vector<hw3d::Triangle> light_facing_triangle{{
+    {-1.0F, -1.0F, 1.0F},
+    {1.0F, -1.0F, 1.0F},
+    {0.0F, 1.0F, -1.0F},
+}};
+
+const std::vector<hw3d::Triangle> light_perpendicular_triangle{{
+    {0.0F, -1.0F, 0.0F},
+    {0.0F, 1.0F, 0.0F},
+    {-0.35F, 0.0F, 0.45F},
+}};
+
 void clear_gl_errors() noexcept
 {
     while (glGetError() != GL_NO_ERROR) {
@@ -44,6 +56,16 @@ std::array<std::uint8_t, 3> center_pixel()
         GL_UNSIGNED_BYTE,
         pixel.data());
     return pixel;
+}
+
+std::array<std::uint8_t, 3> rendered_center_pixel(
+    const std::vector<hw3d::Triangle>& triangles,
+    const bool highlighted)
+{
+    hw3d::Renderer renderer{triangles, {highlighted}};
+    renderer.render();
+    glFinish();
+    return center_pixel();
 }
 
 class RendererTest : public ::testing::Test {
@@ -100,7 +122,7 @@ TEST_F(RendererTest, ConfiguresDepthTestAndRendersGrayTriangle)
 
     EXPECT_EQ(glIsEnabled(GL_DEPTH_TEST), GL_TRUE);
     EXPECT_EQ(depth_function, GL_LESS);
-    EXPECT_GT(pixel[0], 100U);
+    EXPECT_GT(pixel[0], 40U);
     EXPECT_NEAR(pixel[0], pixel[1], 3);
     EXPECT_NEAR(pixel[1], pixel[2], 3);
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
@@ -114,8 +136,25 @@ TEST_F(RendererTest, RendersHighlightedTriangleRed)
     glFinish();
     const auto pixel = center_pixel();
 
-    EXPECT_GT(pixel[0], pixel[1] + 100U);
-    EXPECT_GT(pixel[0], pixel[2] + 100U);
+    EXPECT_GT(pixel[0], pixel[1] + 60U);
+    EXPECT_GT(pixel[0], pixel[2] + 60U);
+    EXPECT_EQ(glGetError(), GL_NO_ERROR);
+}
+
+TEST_F(RendererTest, UsesDimAmbientAndStrongerDirectionalDiffuse)
+{
+    const auto ambient_pixel = rendered_center_pixel(
+        light_perpendicular_triangle,
+        false);
+    const auto diffuse_pixel = rendered_center_pixel(
+        light_facing_triangle,
+        false);
+
+    EXPECT_GT(ambient_pixel[0], 15U);
+    EXPECT_LT(ambient_pixel[0], 40U);
+    EXPECT_GT(diffuse_pixel[0], ambient_pixel[0] + 50U);
+    EXPECT_NEAR(ambient_pixel[0], ambient_pixel[1], 3);
+    EXPECT_NEAR(diffuse_pixel[0], diffuse_pixel[1], 3);
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
 }
 
