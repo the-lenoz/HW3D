@@ -5,6 +5,8 @@ module;
 #include <istream>
 #include <stdexcept>
 #include <string>
+#include <iostream>
+#include <chrono>
 
 module hw3d.configuration;
 
@@ -31,6 +33,9 @@ Triangle read_triangle(std::istream& input, const std::size_t index)
 
 Configuration read_configuration(std::istream& input)
 {
+    std::cout << std::format("{:%T}: {}:{}\n", std::chrono::system_clock::now(), __func__, __LINE__);
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(nullptr);
     std::int64_t triangle_count{};
     if (!(input >> triangle_count)) {
         throw std::runtime_error("failed to read triangle count");
@@ -49,6 +54,9 @@ Configuration read_configuration(std::istream& input)
         configuration.triangles.push_back(
             read_triangle(input, static_cast<std::size_t>(index + 1)));
     }
+
+    std::ios_base::sync_with_stdio(true);
+    std::cin.tie(&std::cout);
 
     return configuration;
 }

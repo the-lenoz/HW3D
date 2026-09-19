@@ -79,6 +79,7 @@ target_sources(
     hw3d_modules
     PRIVATE
         src/configuration/configuration.cpp
+        src/geometry/geometry.cpp
         src/window_context/window_context.cpp
         src/shader_program/shader_program.cpp
         src/renderer/renderer.cpp
@@ -88,6 +89,7 @@ target_sources(
     PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
             src/configuration/configuration.cppm
+            src/geometry/geometry.cppm
             src/window_context/window_context.cppm
             src/shader_program/shader_program.cppm
             src/renderer/renderer.cppm
@@ -160,6 +162,10 @@ if(BUILD_TESTING)
     add_hw3d_test(
         configuration_tests
         tests/configuration_tests.cpp
+    )
+    add_hw3d_test(
+        geometry_tests
+        tests/geometry_tests.cpp
     )
     add_hw3d_test(
         cpu_intersections_tests

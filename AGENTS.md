@@ -20,8 +20,9 @@ HW3D читает набор треугольников в трёхмерном 
 Реализовано:
 
 - сборка приложения и тестов через CMake и Ninja;
-- шесть C++-модулей, подключённых к цели `hw3d`;
+- семь C++-модулей, подключённых к цели `hw3d`;
 - чтение и проверка входных данных в `hw3d.configuration`;
+- общие AABB- и voxel-примитивы в `hw3d.geometry` для CPU- и GPU-backend;
 - инициализация GLFW, создание окна и OpenGL 4.6 Core context;
 - загрузка OpenGL 4.6 Core API через GLAD;
 - цикл событий и кадров, завершающийся по `Esc` или закрытию окна;
@@ -36,17 +37,16 @@ HW3D читает набор треугольников в трёхмерном 
 - perspective camera с захватом мыши, yaw/pitch-вращением и creative-flight перемещением;
 - динамические near/far clipping planes, следующие за положением камеры относительно сцены;
 - поиск пересечений треугольников на CPU через sparse voxel grid, AABB broad phase и plane/interval narrow phase;
-- отдельные GoogleTest-наборы для всех шести модулей;
-- пробный compute shader с проверкой площади треугольника, который компилируется и линкуется в GPU-тесте.
+- отдельные GoogleTest-наборы для всех семи модулей;
+- поиск пересечений невырожденных треугольников на GPU через voxel broad phase и SAT narrow phase;
+- выбор CPU- или GPU-backend флагом `--use-gpu-intersections`.
 
 Пока не реализовано:
 
 - настраиваемые материалы и несколько источников света;
-- запуск compute shader и передача ему буферов из GPU backend;
-- поиск пересечений на GPU;
-- выбор вычислительного backend;
+- обработка вырожденных треугольников в GPU-backend.
 
-CPU-модуль реализован, и `main` передаёт его результат renderer. `gpu_collisions` пока является заглушкой и возвращает `true` для каждого входного треугольника; compute shader в приложении не запускается.
+CPU-модуль реализован и используется по умолчанию. При флаге `--use-gpu-intersections` приложение запускает compute shader поиска пересечений. GPU-backend намеренно считает вырожденные треугольники непересекающимися; CPU-backend продолжает обрабатывать их как точки и отрезки.
 
 ## Структура репозитория
 
@@ -60,6 +60,7 @@ HW3D/
 │   └── embed_shaders.cmake
 ├── tests/
 │   ├── configuration_tests.cpp
+│   ├── geometry_tests.cpp
 │   ├── window_context_tests.cpp
 │   ├── shader_program_tests.cpp
 │   ├── renderer_tests.cpp
@@ -70,6 +71,9 @@ HW3D/
     ├── configuration/
     │   ├── configuration.cppm
     │   └── configuration.cpp
+    ├── geometry/
+    │   ├── geometry.cppm
+    │   └── geometry.cpp
     ├── window_context/
     │   ├── window_context.cppm
     │   └── window_context.cpp
@@ -104,7 +108,7 @@ GLAD 2.0.8 подключается только через CMake `FetchContent`
 
 Цель `hw3d_modules` связывается с `hw3d_glad`, `glfw` и `OpenGL::GL`. Если `${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_shaders.hpp` ещё отсутствует, CMake создаёт его уже при конфигурации, чтобы IDE могла индексировать потребителей до первой сборки. При изменении любого из трёх GLSL-файлов или скрипта сборка повторно запускает `cmake/embed_shaders.cmake` и пересобирает затронутых потребителей. Заголовок содержит строки `hw3d::shaders::triangle_vert_glsl`, `hw3d::shaders::triangle_frag_glsl` и `hw3d::shaders::intersections_comp_glsl`; имена образуются заменой точек в именах файлов на подчёркивания. Заголовок остаётся внутри build-каталога; renderer и GPU-тест не ищут GLSL-файлы при запуске.
 
-При `BUILD_TESTING=ON` — это стандартное значение CTest — CMake получает GoogleTest 1.17.0 через `FetchContent` из официального репозитория и строит шесть независимых test executables. Каждый из них связывается с `hw3d_modules` и `GTest::gtest_main`. GL-тесты дополнительно связываются с `hw3d_glad`, выполняются последовательно и запускаются с отключённой переменной `WAYLAND_DISPLAY`: это выбирает стабильный для повторной инициализации GLFW X11 backend. Если во время конфигурации `DISPLAY` отсутствует, а `xvfb-run` найден, CTest автоматически оборачивает каждый GL-тест в отдельный Xvfb server. GoogleTest и его цели можно исключить из сборки через `-DBUILD_TESTING=OFF`.
+При `BUILD_TESTING=ON` — это стандартное значение CTest — CMake получает GoogleTest 1.17.0 через `FetchContent` из официального репозитория и строит семь независимых test executables. Каждый из них связывается с `hw3d_modules` и `GTest::gtest_main`. GL-тесты дополнительно связываются с `hw3d_glad`, выполняются последовательно и запускаются с отключённой переменной `WAYLAND_DISPLAY`: это выбирает стабильный для повторной инициализации GLFW X11 backend. Если во время конфигурации `DISPLAY` отсутствует, а `xvfb-run` найден, CTest автоматически оборачивает каждый GL-тест в отдельный Xvfb server. GoogleTest и его цели можно исключить из сборки через `-DBUILD_TESTING=OFF`.
 
 Основные команды:
 
@@ -145,7 +149,7 @@ ctest --preset release
 
 ```text
 stdin -> Configuration
-      -> cpu_collisions(Configuration::triangles)
+      -> cpu_collisions или gpu_collisions в зависимости от CLI-флага
       -> vector<bool> highlighted
       -> WindowContext создаёт окно, активный GL context и загружает GLAD
       -> Renderer принимает triangles + flags, создаёт VAO/VBO и через ShaderProgram компилирует встроенные shaders
@@ -157,7 +161,7 @@ stdin -> Configuration
       -> RAII сначала освобождает renderer, затем окно и GLFW
 ```
 
-Целевой поток данных после реализации GPU backend:
+Текущий поток данных с взаимозаменяемыми backend:
 
 ```text
 stdin
@@ -243,6 +247,33 @@ struct Configuration {
 `Vec3` и `Triangle` сейчас являются общими моделями геометрических данных и объявлены именно в этом модуле. Остальные модули должны импортировать и переиспользовать их, а не создавать несовместимые дубликаты. Если позднее модели будут вынесены в отдельный доменный модуль, нужно одновременно обновить все импорты и этот документ.
 
 Ошибки ввода передаются вызывающему коду исключениями. Модуль не читает `std::cin` напрямую, не пишет диагностику и не зависит от GLFW/OpenGL.
+
+### `hw3d.geometry`
+
+Файлы: `src/geometry/geometry.cppm` и `src/geometry/geometry.cpp`.
+
+Модуль импортирует `hw3d.configuration` и содержит общие для CPU- и GPU-backend примитивы broad phase:
+
+```cpp
+struct Aabb { Vec3 minimum; Vec3 maximum; };
+struct Voxel { std::int64_t x; std::int64_t y; std::int64_t z; };
+struct VoxelHash;
+struct VoxelGrid { Vec3 origin; Vec3 voxel_size; };
+
+[[nodiscard]] Aabb aabb(const Triangle& triangle) noexcept;
+[[nodiscard]] Vec3 extent(const Aabb& bounds) noexcept;
+[[nodiscard]] Vec3 center(const Aabb& bounds) noexcept;
+[[nodiscard]] bool aabbs_intersect(const Aabb&, const Aabb&) noexcept;
+[[nodiscard]] VoxelGrid make_voxel_grid(
+    const std::vector<Aabb>& bounds) noexcept;
+[[nodiscard]] Voxel voxel_for(
+    const Vec3& point,
+    const VoxelGrid& grid) noexcept;
+```
+
+`make_voxel_grid` выбирает origin как минимум всех AABB, а размер ячейки как покоординатный максимум их размеров. Нулевые размеры заменяются общим положительным fallback. `voxel_for` применяет `floor` и насыщает координаты до безопасного диапазона `int64_t`, оставляя место для соседних offsets. Пустой набор AABB создаёт сетку с origin `(0,0,0)` и размером ячейки `(1,1,1)`.
+
+Модуль не содержит алгоритм поиска пересечений и не зависит от OpenGL.
 
 ### `hw3d.window_context`
 
@@ -391,7 +422,7 @@ Renderer принимает готовые отметки и не определ
 
 Файлы: `src/cpu_intersections/cpu_intersections.cppm` и `src/cpu_intersections/cpu_intersections.cpp`.
 
-Модуль реализован, импортирует только `hw3d.configuration` и экспортирует:
+Модуль реализован, импортирует `hw3d.configuration` и `hw3d.geometry` и экспортирует:
 
 ```cpp
 [[nodiscard]] std::vector<bool> cpu_collisions(
@@ -432,7 +463,20 @@ Narrow phase пары:
 
 Файлы: `src/gpu_intersections/gpu_intersections.cppm`, `src/gpu_intersections/gpu_intersections.cpp` и `src/gpu_intersections/shaders/intersections.comp.glsl`.
 
-Текущее состояние: модуль экспортирует `gpu_collisions(const std::vector<Triangle>&)` с контрактом результата `std::vector<bool>`, но пока возвращает `true` для каждого треугольника без вычислений. Compute shader OpenGL 4.6 содержит пробную проверку площади (`S > 5.0`), принимает массив треугольников через SSBO binding 0 и пишет целочисленные отметки в SSBO binding 1. CMake встраивает его текст в `embedded_shaders.hpp`; отдельный GPU-тест создаёт из него `ShaderProgram::compute` и проверяет линковку настоящим OpenGL driver. `gpu_collisions` пока не использует shader.
+Модуль экспортирует `gpu_collisions(const std::vector<Triangle>&)` с контрактом результата `std::vector<bool>` и требует активный OpenGL context. Пустой вход возвращает пустой результат без GPU dispatch.
+
+Подготовка и выполнение устроены следующим образом:
+
+1. Через `hw3d.geometry` для каждого треугольника вычисляются AABB, общий `VoxelGrid` и voxel его AABB-center.
+2. Каждая GPU-запись занимает 96 байт: три padded `vec3`, `ivec4` с координатами voxel и исходным индексом, затем padded minimum/maximum AABB.
+3. Записи лексикографически сортируются по координатам voxel; исходный индекс сохраняется в `voxel.w`, поэтому выходные flags возвращаются в порядке входного массива.
+4. Вход загружается в read-only SSBO binding 0. Выходной SSBO binding 1 содержит по одному очищенному `int` на входной треугольник.
+5. Compute shader запускается группами по 64 invocation. Каждый invocation обрабатывает одну отсортированную запись, перебирает её voxel и 26 соседей и находит начало bucket фиксированным 22-шаговым binary search, достаточным при ограничении `N < 1'000'000`.
+6. Bucket сканируется с `GL_ARB_shader_group_vote`; каждая пара рассматривается один раз по условию sorted index кандидата больше текущего.
+7. Сначала выполняется inclusive AABB-проверка, затем SAT по 17 осям: две нормали треугольников, девять cross products рёбер и шесть лежащих в плоскостях нормалей к рёбрам. Inclusive overlap проекций считает касание пересечением.
+8. При пересечении `atomicOr` выставляет flags обоих исходных индексов. После dispatch C++ выполняет memory barrier и одним `glGetNamedBufferSubData` читает результат.
+
+SAT начинается с проверки ненулевой площади обоих треугольников (`dot(normal, normal) > 1e-6`). Поэтому вырожденные точки и отрезки сейчас намеренно игнорируются и получают `false`, даже если CPU-backend считает их пересекающимися. CMake встраивает shader в `embedded_shaders.hpp`; GPU-тесты вызывают весь публичный pipeline на настоящем OpenGL driver.
 
 Целевая ответственность:
 
@@ -448,11 +492,11 @@ GPU backend требует активного OpenGL-контекста. Его 
 
 Текущее поведение:
 
-- импортирует конфигурацию, окно, renderer и CPU-модуль пересечений;
+- импортирует конфигурацию, окно, renderer и оба модуля пересечений;
 - вызывает `hw3d::read_configuration(std::cin)`;
-- вызывает `hw3d::cpu_collisions(configuration.triangles)` и получает `highlighted`;
-- создаёт окно `1280 x 720` с заголовком `HW3D`;
-- создаёт `Renderer` из `configuration.triangles` и CPU-отметок после создания активного GL context;
+- создаёт окно `1280 x 720` с заголовком `HW3D` до вычисления, чтобы GPU-backend имел активный context;
+- без флага вызывает `hw3d::cpu_collisions`, а с `--use-gpu-intersections` — `hw3d::gpu_collisions`;
+- создаёт `Renderer` из `configuration.triangles` и отметок выбранного backend после создания активного GL context;
 - передаёт `WindowContext::run` одну лямбду, захватывающую renderer по ссылке;
 - внутри лямбды сначала поворачивает камеру по накопленному смещению мыши, затем применяет удерживаемые стрелки в порядке up/down/left/right и вызывает `Renderer::render()`;
 - объявляет renderer после окна, поэтому при выходе renderer уничтожается первым и освобождает OpenGL-ресурсы при ещё активном context;
@@ -466,13 +510,14 @@ GPU backend требует активного OpenGL-контекста. Его 
 Тесты написаны на GoogleTest и разделены по тестируемым модулям:
 
 - `configuration_tests` содержит 10 тестов: корректное чтение одного и нескольких треугольников, whitespace, trailing data, вырожденные данные, отсутствующий и некорректный count, обе границы count и нумерацию неполного треугольника;
+- `geometry_tests` содержит 4 теста: построение AABB, inclusive-пересечение AABB, общие параметры voxel-сетки и положительный fallback для плоской геометрии;
 - `cpu_intersections_tests` содержит 23 теста публичной функции `cpu_collisions`: пустой/единичный вход, одинаковые, вложенные, раздельные, компланарные и некомпланарные треугольники, касание ребром/вершиной, порядок пары, выборочное выставление flags, sparse voxels, положительный зазор и вырожденные point/segment комбинации;
 - `window_context_tests` содержит 9 тестов: валидацию constructor, запрет второго живого экземпляра, повторное создание после destruction, закрытие до кадра, снимок ввода за один кадр, пустой обработчик и передачу исключения из обработчика;
 - `shader_program_tests` содержит 5 GL-тестов: graphics/compute программы, ошибки компиляции и линковки, использование программы и перемещение владельца;
 - `renderer_tests` содержит 7 тестов с настоящим OpenGL context: ошибки constructor, состояние depth test, фактические gray/red pixels, сравнение слабого ambient с направленным diffuse, методы движения и вращения и нулевой viewport;
-- `gpu_intersections_tests` содержит один тест: он импортирует модуль, создаёт и использует программу из встроенного compute shader через общий API.
+- `gpu_intersections_tests` содержит 18 GL-тестов: линковку встроенного shader, пустой и единичный вход, одинаковые и вложенные треугольники, coplanar/non-coplanar случаи, касания ребром и вершиной, separated planes и AABB, выборочное выставление flags, независимость от порядка и winding, sparse voxels с восстановлением исходных индексов, положительный зазор, dispatch на 130 треугольниках через несколько work groups и явно названное текущее игнорирование вырожденного треугольника.
 
-Всего выполняется 55 GoogleTest case. Тесты обращаются только к публичному API модулей; внутренние функции implementation units покрываются транзитивно через публичные сценарии и не экспортируются специально ради тестирования. GLFW не предоставляет публичному модулю способ синтетически нажать стрелку или сдвинуть cursor, поэтому снимок ввода проверяется без искусственных событий, а реакция на реальные устройства остаётся smoke/manual проверкой. При появлении injectable input backend это ограничение следует заменить автоматическими проверками состояний стрелок и накопленных mouse offsets.
+Всего выполняется 76 GoogleTest case. Тесты обращаются только к публичному API модулей; внутренние функции implementation units покрываются транзитивно через публичные сценарии и не экспортируются специально ради тестирования. GLFW не предоставляет публичному модулю способ синтетически нажать стрелку или сдвинуть cursor, поэтому снимок ввода проверяется без искусственных событий, а реакция на реальные устройства остаётся smoke/manual проверкой. При появлении injectable input backend это ограничение следует заменить автоматическими проверками состояний стрелок и накопленных mouse offsets.
 
 Четыре GL-набора требуют работающий OpenGL 4.6 driver. CTest запускает их последовательно, через X11, и при headless-конфигурации использует `xvfb-run`, если он доступен. Провал создания контекста считается ошибкой теста, а не молчаливым skip.
 

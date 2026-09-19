@@ -6,44 +6,15 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <numeric>
 #include <unordered_map>
 #include <vector>
 
 module hw3d.cpu_intersections;
 
+import hw3d.geometry;
+
 namespace hw3d {
 namespace {
-
-struct Aabb {
-    Vec3 minimum;
-    Vec3 maximum;
-};
-
-struct Voxel {
-    std::int64_t x;
-    std::int64_t y;
-    std::int64_t z;
-
-    bool operator==(const Voxel&) const = default;
-};
-
-struct VoxelHash {
-    std::size_t operator()(const Voxel& voxel) const noexcept
-    {
-        auto mix = [](std::uint64_t value) noexcept {
-            value += 0x9e3779b97f4a7c15ULL;
-            value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
-            value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
-            return value ^ (value >> 31U);
-        };
-
-        const std::uint64_t x = mix(static_cast<std::uint64_t>(voxel.x));
-        const std::uint64_t y = mix(static_cast<std::uint64_t>(voxel.y));
-        const std::uint64_t z = mix(static_cast<std::uint64_t>(voxel.z));
-        return static_cast<std::size_t>(x ^ (y << 1U) ^ (z << 7U));
-    }
-};
 
 struct IndexedTriangle {
     std::size_t id;
@@ -120,46 +91,6 @@ Vec3 normalize(const Vec3& vector) noexcept
 std::array<Vec3, 3> vertices(const Triangle& triangle) noexcept
 {
     return {triangle.a, triangle.b, triangle.c};
-}
-
-Aabb aabb(const Triangle& triangle) noexcept
-{
-    return {
-        .minimum = {
-            std::min({triangle.a.x, triangle.b.x, triangle.c.x}),
-            std::min({triangle.a.y, triangle.b.y, triangle.c.y}),
-            std::min({triangle.a.z, triangle.b.z, triangle.c.z}),
-        },
-        .maximum = {
-            std::max({triangle.a.x, triangle.b.x, triangle.c.x}),
-            std::max({triangle.a.y, triangle.b.y, triangle.c.y}),
-            std::max({triangle.a.z, triangle.b.z, triangle.c.z}),
-        },
-    };
-}
-
-Vec3 extent(const Aabb& bounds) noexcept
-{
-    return subtract(bounds.maximum, bounds.minimum);
-}
-
-Vec3 center(const Aabb& bounds) noexcept
-{
-    return {
-        std::midpoint(bounds.minimum.x, bounds.maximum.x),
-        std::midpoint(bounds.minimum.y, bounds.maximum.y),
-        std::midpoint(bounds.minimum.z, bounds.maximum.z),
-    };
-}
-
-bool aabbs_intersect(const Aabb& left, const Aabb& right) noexcept
-{
-    return left.minimum.x <= right.maximum.x
-        && left.maximum.x >= right.minimum.x
-        && left.minimum.y <= right.maximum.y
-        && left.maximum.y >= right.minimum.y
-        && left.minimum.z <= right.maximum.z
-        && left.maximum.z >= right.minimum.z;
 }
 
 float coordinate_scale(
@@ -740,37 +671,6 @@ bool triangles_intersect(
         && right_interval.minimum <= left_interval.maximum + tolerance;
 }
 
-std::int64_t voxel_coordinate(
-    const float value,
-    const float origin,
-    const float voxel_size) noexcept
-{
-    constexpr std::int64_t coordinate_limit =
-        std::numeric_limits<std::int64_t>::max() / 4;
-    const float scaled = (value - origin) / voxel_size;
-
-    if (!std::isfinite(scaled)
-        || scaled >= static_cast<float>(coordinate_limit)) {
-        return coordinate_limit;
-    }
-    if (scaled <= static_cast<float>(-coordinate_limit)) {
-        return -coordinate_limit;
-    }
-    return static_cast<std::int64_t>(std::floor(scaled));
-}
-
-Voxel voxel_for(
-    const Vec3& point,
-    const Vec3& origin,
-    const Vec3& voxel_size) noexcept
-{
-    return {
-        voxel_coordinate(point.x, origin.x, voxel_size.x),
-        voxel_coordinate(point.y, origin.y, voxel_size.y),
-        voxel_coordinate(point.z, origin.z, voxel_size.z),
-    };
-}
-
 }
 
 std::vector<bool> cpu_collisions(const std::vector<Triangle>& triangles)
@@ -783,41 +683,12 @@ std::vector<bool> cpu_collisions(const std::vector<Triangle>& triangles)
     std::vector<Aabb> bounds;
     bounds.reserve(triangles.size());
 
-    Vec3 scene_minimum{
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max()};
-    Vec3 voxel_size{};
-
     for (const Triangle& triangle : triangles) {
         const Aabb triangle_bounds = aabb(triangle);
         bounds.push_back(triangle_bounds);
-
-        scene_minimum.x = std::min(scene_minimum.x, triangle_bounds.minimum.x);
-        scene_minimum.y = std::min(scene_minimum.y, triangle_bounds.minimum.y);
-        scene_minimum.z = std::min(scene_minimum.z, triangle_bounds.minimum.z);
-
-        const Vec3 triangle_extent = extent(triangle_bounds);
-        voxel_size.x = std::max(voxel_size.x, triangle_extent.x);
-        voxel_size.y = std::max(voxel_size.y, triangle_extent.y);
-        voxel_size.z = std::max(voxel_size.z, triangle_extent.z);
     }
 
-    const float fallback_size = std::max({
-        voxel_size.x,
-        voxel_size.y,
-        voxel_size.z,
-        1.0F,
-    });
-    if (voxel_size.x == 0.0F) {
-        voxel_size.x = fallback_size;
-    }
-    if (voxel_size.y == 0.0F) {
-        voxel_size.y = fallback_size;
-    }
-    if (voxel_size.z == 0.0F) {
-        voxel_size.z = fallback_size;
-    }
+    const VoxelGrid voxel_grid = make_voxel_grid(bounds);
 
     std::vector<IndexedTriangle> indexed_triangles;
     indexed_triangles.reserve(triangles.size());
@@ -828,8 +699,7 @@ std::vector<bool> cpu_collisions(const std::vector<Triangle>& triangles)
     for (std::size_t id = 0; id < triangles.size(); ++id) {
         const Voxel voxel = voxel_for(
             center(bounds[id]),
-            scene_minimum,
-            voxel_size);
+            voxel_grid);
         indexed_triangles.push_back({id, bounds[id], voxel});
         grid[voxel].push_back(id);
     }
