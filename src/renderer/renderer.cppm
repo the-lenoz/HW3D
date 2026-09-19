@@ -33,14 +33,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-void render_frame(void* renderer) noexcept;
-void move_camera_forward(void* renderer, float delta_seconds) noexcept;
-void move_camera_back(void* renderer, float delta_seconds) noexcept;
-void move_camera_left(void* renderer, float delta_seconds) noexcept;
-void move_camera_right(void* renderer, float delta_seconds) noexcept;
-void rotate_camera(
-    void* renderer,
-    float x_offset,
-    float y_offset) noexcept;
-
 }

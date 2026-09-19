@@ -173,32 +173,6 @@ TEST_F(RendererTest, MovementAndRotationMethodsRemainRenderable)
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
 }
 
-TEST_F(RendererTest, CallbackAdaptersInvokeEveryRendererOperation)
-{
-    hw3d::Renderer renderer{centered_triangle, {false}};
-
-    hw3d::move_camera_forward(&renderer, 0.1F);
-    hw3d::move_camera_back(&renderer, 0.1F);
-    hw3d::move_camera_left(&renderer, 0.1F);
-    hw3d::move_camera_right(&renderer, 0.1F);
-    hw3d::rotate_camera(&renderer, 10.0F, -10.0F);
-    hw3d::render_frame(&renderer);
-
-    EXPECT_EQ(glGetError(), GL_NO_ERROR);
-}
-
-TEST_F(RendererTest, CallbackAdaptersIgnoreNullContext)
-{
-    hw3d::move_camera_forward(nullptr, 0.1F);
-    hw3d::move_camera_back(nullptr, 0.1F);
-    hw3d::move_camera_left(nullptr, 0.1F);
-    hw3d::move_camera_right(nullptr, 0.1F);
-    hw3d::rotate_camera(nullptr, 1.0F, 1.0F);
-    hw3d::render_frame(nullptr);
-
-    EXPECT_EQ(glGetError(), GL_NO_ERROR);
-}
-
 TEST_F(RendererTest, RenderSkipsZeroSizedViewport)
 {
     hw3d::Renderer renderer{centered_triangle, {false}};

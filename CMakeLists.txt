@@ -2,6 +2,30 @@ cmake_minimum_required(VERSION 3.28)
 
 project(HW3D LANGUAGES C CXX)
 
+set(HW3D_SHADER_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_shaders.hpp")
+set(HW3D_RENDERER_VERTEX_SHADER
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.vert.glsl")
+set(HW3D_RENDERER_FRAGMENT_SHADER
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.frag.glsl")
+set(HW3D_COMPUTE_SHADER
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_intersections/shaders/intersections.comp.glsl")
+set(HW3D_SHADER_GENERATOR
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shaders.cmake")
+
+# IDEs index the target after configuration, before the first build.
+if(NOT EXISTS "${HW3D_SHADER_HEADER}")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}"
+            "-DVERTEX_SHADER=${HW3D_RENDERER_VERTEX_SHADER}"
+            "-DFRAGMENT_SHADER=${HW3D_RENDERER_FRAGMENT_SHADER}"
+            "-DCOMPUTE_SHADER=${HW3D_COMPUTE_SHADER}"
+            "-DOUTPUT_HEADER=${HW3D_SHADER_HEADER}"
+            -P "${HW3D_SHADER_GENERATOR}"
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+endif()
+
 include(FetchContent)
 include(CTest)
 
@@ -31,40 +55,48 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(hw3d_modules STATIC)
 
-set(HW3D_RENDERER_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders/renderer")
-file(MAKE_DIRECTORY "${HW3D_RENDERER_SHADER_DIR}")
-configure_file(
-    src/renderer/shaders/triangle.vert.glsl
-    "${HW3D_RENDERER_SHADER_DIR}/triangle.vert.glsl"
-    COPYONLY
+add_custom_command(
+    OUTPUT "${HW3D_SHADER_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVERTEX_SHADER=${HW3D_RENDERER_VERTEX_SHADER}"
+        "-DFRAGMENT_SHADER=${HW3D_RENDERER_FRAGMENT_SHADER}"
+        "-DCOMPUTE_SHADER=${HW3D_COMPUTE_SHADER}"
+        "-DOUTPUT_HEADER=${HW3D_SHADER_HEADER}"
+        -P "${HW3D_SHADER_GENERATOR}"
+    DEPENDS
+        "${HW3D_RENDERER_VERTEX_SHADER}"
+        "${HW3D_RENDERER_FRAGMENT_SHADER}"
+        "${HW3D_COMPUTE_SHADER}"
+        "${HW3D_SHADER_GENERATOR}"
+    COMMENT "Embedding GLSL shaders"
+    VERBATIM
 )
-configure_file(
-    src/renderer/shaders/triangle.frag.glsl
-    "${HW3D_RENDERER_SHADER_DIR}/triangle.frag.glsl"
-    COPYONLY
-)
+add_custom_target(hw3d_shader_header
+    DEPENDS "${HW3D_SHADER_HEADER}")
+add_dependencies(hw3d_modules hw3d_shader_header)
 
 target_sources(
     hw3d_modules
     PRIVATE
         src/configuration/configuration.cpp
         src/window_context/window_context.cpp
+        src/shader_program/shader_program.cpp
         src/renderer/renderer.cpp
         src/cpu_intersections/cpu_intersections.cpp
         src/gpu_intersections/gpu_intersections.cpp
+        "${HW3D_SHADER_HEADER}"
     PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
             src/configuration/configuration.cppm
             src/window_context/window_context.cppm
+            src/shader_program/shader_program.cppm
             src/renderer/renderer.cppm
             src/cpu_intersections/cpu_intersections.cppm
             src/gpu_intersections/gpu_intersections.cppm
 )
 
-target_compile_definitions(
-    hw3d_modules
-    PRIVATE HW3D_RENDERER_SHADER_DIR="${HW3D_RENDERER_SHADER_DIR}"
-)
+target_include_directories(hw3d_modules
+    PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 target_link_libraries(
     hw3d_modules
@@ -138,6 +170,10 @@ if(BUILD_TESTING)
         tests/window_context_tests.cpp
     )
     add_hw3d_gl_test(
+        shader_program_tests
+        tests/shader_program_tests.cpp
+    )
+    add_hw3d_gl_test(
         renderer_tests
         tests/renderer_tests.cpp
     )
@@ -145,14 +181,16 @@ if(BUILD_TESTING)
         gpu_intersections_tests
         tests/gpu_intersections_tests.cpp
     )
-    target_compile_definitions(
+    target_include_directories(
         gpu_intersections_tests
         PRIVATE
-            HW3D_GPU_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_intersections/shaders/intersections.comp.glsl"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated"
     )
+    add_dependencies(gpu_intersections_tests hw3d_shader_header)
 
     set_tests_properties(
         window_context_tests
+        shader_program_tests
         renderer_tests
         gpu_intersections_tests
         PROPERTIES

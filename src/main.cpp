@@ -18,22 +18,22 @@ int main()
         hw3d::WindowContext window{1280, 720, "HW3D"};
         hw3d::Renderer renderer{configuration.triangles, highlighted};
 
-        window.register_arrow_callback(
-            hw3d::ArrowKey::up,
-            {&hw3d::move_camera_forward, &renderer});
-        window.register_arrow_callback(
-            hw3d::ArrowKey::down,
-            {&hw3d::move_camera_back, &renderer});
-        window.register_arrow_callback(
-            hw3d::ArrowKey::left,
-            {&hw3d::move_camera_left, &renderer});
-        window.register_arrow_callback(
-            hw3d::ArrowKey::right,
-            {&hw3d::move_camera_right, &renderer});
-        window.register_mouse_move_callback(
-            {&hw3d::rotate_camera, &renderer});
-
-        window.run({&hw3d::render_frame, &renderer});
+        window.run([&renderer](const hw3d::FrameInput& input) {
+            renderer.rotate(input.mouse_x_offset, input.mouse_y_offset);
+            if (input.up) {
+                renderer.move_forward(input.delta_seconds);
+            }
+            if (input.down) {
+                renderer.move_back(input.delta_seconds);
+            }
+            if (input.left) {
+                renderer.move_left(input.delta_seconds);
+            }
+            if (input.right) {
+                renderer.move_right(input.delta_seconds);
+            }
+            renderer.render();
+        });
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

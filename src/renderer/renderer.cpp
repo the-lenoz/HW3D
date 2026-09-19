@@ -1,21 +1,20 @@
 module;
 
 #include <glad/gl.h>
+#include "embedded_shaders.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
-#include <string>
 #include <vector>
 
 module hw3d.renderer;
+import hw3d.shader_program;
 
 namespace hw3d {
 namespace {
@@ -26,96 +25,6 @@ constexpr float field_of_view_radians = 1.0471975512F;
 constexpr float initial_yaw_radians = -1.5707963268F;
 constexpr float maximum_pitch_radians = 1.5533430343F;
 constexpr float mouse_sensitivity = 0.002F;
-
-std::string read_text_file(const std::filesystem::path& path)
-{
-    std::ifstream input{path};
-    if (!input) {
-        throw std::runtime_error(
-            "failed to open shader: " + path.string());
-    }
-
-    return {
-        std::istreambuf_iterator<char>{input},
-        std::istreambuf_iterator<char>{}};
-}
-
-std::string shader_log(const GLuint shader)
-{
-    GLint length{};
-    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
-
-    std::string log(static_cast<std::size_t>(std::max(length, 1)), '\0');
-    glGetShaderInfoLog(shader, length, nullptr, log.data());
-    return log;
-}
-
-GLuint compile_shader(const GLenum type, const std::string& source)
-{
-    const GLuint shader = glCreateShader(type);
-    const char* const source_pointer = source.c_str();
-    glShaderSource(shader, 1, &source_pointer, nullptr);
-    glCompileShader(shader);
-
-    GLint compiled{};
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-    if (compiled == GL_FALSE) {
-        const std::string log = shader_log(shader);
-        glDeleteShader(shader);
-        throw std::runtime_error("shader compilation failed: " + log);
-    }
-
-    return shader;
-}
-
-std::string program_log(const GLuint program)
-{
-    GLint length{};
-    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
-
-    std::string log(static_cast<std::size_t>(std::max(length, 1)), '\0');
-    glGetProgramInfoLog(program, length, nullptr, log.data());
-    return log;
-}
-
-GLuint create_program()
-{
-    const std::filesystem::path shader_directory{HW3D_RENDERER_SHADER_DIR};
-    const std::string vertex_source = read_text_file(
-        shader_directory / "triangle.vert.glsl");
-    const std::string fragment_source = read_text_file(
-        shader_directory / "triangle.frag.glsl");
-
-    const GLuint vertex_shader = compile_shader(
-        GL_VERTEX_SHADER,
-        vertex_source);
-
-    GLuint fragment_shader{};
-    try {
-        fragment_shader = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
-    } catch (...) {
-        glDeleteShader(vertex_shader);
-        throw;
-    }
-
-    const GLuint program = glCreateProgram();
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    glLinkProgram(program);
-
-    glDeleteShader(vertex_shader);
-    glDeleteShader(fragment_shader);
-
-    GLint linked{};
-    glGetProgramiv(program, GL_LINK_STATUS, &linked);
-    if (linked == GL_FALSE) {
-        const std::string log = program_log(program);
-        glDeleteProgram(program);
-        throw std::runtime_error("shader program linking failed: " + log);
-    }
-
-    return program;
-}
 
 Matrix4 multiply(const Matrix4& left, const Matrix4& right) noexcept
 {
@@ -368,11 +277,6 @@ ClipPlanes clip_planes(
     };
 }
 
-Renderer* renderer_from(void* const pointer) noexcept
-{
-    return static_cast<Renderer*>(pointer);
-}
-
 }
 
 class Renderer::Impl final {
@@ -401,12 +305,11 @@ public:
         scene_radius_ = bounds.radius;
         movement_speed_ = bounds.movement_speed;
 
-        program_ = create_program();
-        view_projection_location_ =
-            glGetUniformLocation(program_, "view_projection");
+        program_.emplace(ShaderProgram::graphics(
+            shaders::triangle_vert_glsl,
+            shaders::triangle_frag_glsl));
+        view_projection_location_ = program_->uniform_location("view_projection");
         if (view_projection_location_ < 0) {
-            glDeleteProgram(program_);
-            program_ = 0;
             throw std::runtime_error(
                 "view_projection uniform was not found");
         }
@@ -465,7 +368,6 @@ public:
     {
         glDeleteBuffers(1, &vertex_buffer_);
         glDeleteVertexArrays(1, &vertex_array_);
-        glDeleteProgram(program_);
     }
 
     void render() const noexcept
@@ -493,7 +395,7 @@ public:
         const Matrix4 view = look_at(camera_position_, direction());
         const Matrix4 view_projection = multiply(projection, view);
 
-        glUseProgram(program_);
+        program_->use();
         glUniformMatrix4fv(
             view_projection_location_,
             1,
@@ -553,7 +455,7 @@ private:
         return normalize(cross(direction(), world_up));
     }
 
-    GLuint program_{};
+    std::optional<ShaderProgram> program_;
     GLuint vertex_array_{};
     GLuint vertex_buffer_{};
     GLint view_projection_location_{};
@@ -605,59 +507,6 @@ void Renderer::rotate(
     const float y_offset) noexcept
 {
     impl_->rotate(x_offset, y_offset);
-}
-
-void render_frame(void* const renderer) noexcept
-{
-    if (Renderer* const instance = renderer_from(renderer)) {
-        instance->render();
-    }
-}
-
-void move_camera_forward(
-    void* const renderer,
-    const float delta_seconds) noexcept
-{
-    if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_forward(delta_seconds);
-    }
-}
-
-void move_camera_back(
-    void* const renderer,
-    const float delta_seconds) noexcept
-{
-    if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_back(delta_seconds);
-    }
-}
-
-void move_camera_left(
-    void* const renderer,
-    const float delta_seconds) noexcept
-{
-    if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_left(delta_seconds);
-    }
-}
-
-void move_camera_right(
-    void* const renderer,
-    const float delta_seconds) noexcept
-{
-    if (Renderer* const instance = renderer_from(renderer)) {
-        instance->move_right(delta_seconds);
-    }
-}
-
-void rotate_camera(
-    void* const renderer,
-    const float x_offset,
-    const float y_offset) noexcept
-{
-    if (Renderer* const instance = renderer_from(renderer)) {
-        instance->rotate(x_offset, y_offset);
-    }
 }
 
 }

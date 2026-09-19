@@ -20,32 +20,33 @@ HW3D читает набор треугольников в трёхмерном 
 Реализовано:
 
 - сборка приложения и тестов через CMake и Ninja;
-- пять C++-модулей, подключённых к цели `hw3d`;
+- шесть C++-модулей, подключённых к цели `hw3d`;
 - чтение и проверка входных данных в `hw3d.configuration`;
 - инициализация GLFW, создание окна и OpenGL 4.6 Core context;
 - загрузка OpenGL 4.6 Core API через GLAD;
 - цикл событий и кадров, завершающийся по `Esc` или закрытию окна;
-- регистрация отдельных callback-функций для четырёх стрелок;
+- передача состояния стрелок, накопленного движения мыши и времени кадра одним обработчиком;
 - импорт и связывание существующих модулей в `main.cpp`;
 - загрузка треугольников из конфигурации в VAO/VBO;
+- встраивание двух renderer shaders и compute shader в C++-заголовок при конфигурации и сборке;
+- общий модуль `hw3d.shader_program` для компиляции, линковки и владения OpenGL-программами;
 - компиляция vertex/fragment shaders, серая окраска обычных и красная окраска отмеченных треугольников;
 - матовое Lambert-освещение от параллельного источника сверху со слабым ambient;
 - чёрная экранная кайма по рёбрам каждого треугольника;
 - perspective camera с захватом мыши, yaw/pitch-вращением и creative-flight перемещением;
 - динамические near/far clipping planes, следующие за положением камеры относительно сцены;
 - поиск пересечений треугольников на CPU через sparse voxel grid, AABB broad phase и plane/interval narrow phase;
-- отдельные GoogleTest-наборы для всех пяти модулей;
-- пустой GLSL compute shader как место для будущей GPU-реализации.
+- отдельные GoogleTest-наборы для всех шести модулей;
+- пробный compute shader с проверкой площади треугольника, который компилируется и линкуется в GPU-тесте.
 
 Пока не реализовано:
 
 - настраиваемые материалы и несколько источников света;
-- загрузка, компиляция и запуск compute shader;
+- запуск compute shader и передача ему буферов из GPU backend;
 - поиск пересечений на GPU;
 - выбор вычислительного backend;
-- сборка или копирование compute shader средствами CMake.
 
-CPU-модуль реализован, и `main` передаёт его результат renderer. GPU-модуль пока намеренно содержит только объявления `export module` и `module`.
+CPU-модуль реализован, и `main` передаёт его результат renderer. `gpu_collisions` пока является заглушкой и возвращает `true` для каждого входного треугольника; compute shader в приложении не запускается.
 
 ## Структура репозитория
 
@@ -55,9 +56,12 @@ HW3D/
 ├── CMakeLists.txt
 ├── CMakePresets.json
 ├── README.md
+├── cmake/
+│   └── embed_shaders.cmake
 ├── tests/
 │   ├── configuration_tests.cpp
 │   ├── window_context_tests.cpp
+│   ├── shader_program_tests.cpp
 │   ├── renderer_tests.cpp
 │   ├── cpu_intersections_tests.cpp
 │   └── gpu_intersections_tests.cpp
@@ -69,6 +73,9 @@ HW3D/
     ├── window_context/
     │   ├── window_context.cppm
     │   └── window_context.cpp
+    ├── shader_program/
+    │   ├── shader_program.cppm
+    │   └── shader_program.cpp
     ├── renderer/
     │   ├── renderer.cppm
     │   ├── renderer.cpp
@@ -95,9 +102,9 @@ HW3D/
 
 GLAD 2.0.8 подключается только через CMake `FetchContent` из официального репозитория. После `FetchContent_MakeAvailable` подключается официальный CMake helper и создаётся статическая цель `hw3d_glad` для `gl:core=4.6` без extensions. Сгенерированные GLAD-файлы находятся только внутри build-каталога и не хранятся в исходном дереве. Первичная конфигурация требует Git, Python interpreter и доступ к GitHub; `REPRODUCIBLE` запрещает генератору скачивать актуальную Khronos specification поверх зафиксированной версии зависимости.
 
-Цель `hw3d_modules` связывается с `hw3d_glad`, `glfw` и `OpenGL::GL`. Renderer shaders копируются на стадии конфигурации в `${CMAKE_CURRENT_BINARY_DIR}/shaders/renderer`; абсолютный build-путь передаётся реализации через приватное определение `HW3D_RENDERER_SHADER_DIR`.
+Цель `hw3d_modules` связывается с `hw3d_glad`, `glfw` и `OpenGL::GL`. Если `${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_shaders.hpp` ещё отсутствует, CMake создаёт его уже при конфигурации, чтобы IDE могла индексировать потребителей до первой сборки. При изменении любого из трёх GLSL-файлов или скрипта сборка повторно запускает `cmake/embed_shaders.cmake` и пересобирает затронутых потребителей. Заголовок содержит строки `hw3d::shaders::triangle_vert_glsl`, `hw3d::shaders::triangle_frag_glsl` и `hw3d::shaders::intersections_comp_glsl`; имена образуются заменой точек в именах файлов на подчёркивания. Заголовок остаётся внутри build-каталога; renderer и GPU-тест не ищут GLSL-файлы при запуске.
 
-При `BUILD_TESTING=ON` — это стандартное значение CTest — CMake получает GoogleTest 1.17.0 через `FetchContent` из официального репозитория и строит пять независимых test executables. Каждый из них связывается с `hw3d_modules` и `GTest::gtest_main`. GL-тесты дополнительно связываются с `hw3d_glad`, выполняются последовательно и запускаются с отключённой переменной `WAYLAND_DISPLAY`: это выбирает стабильный для повторной инициализации GLFW X11 backend. Если во время конфигурации `DISPLAY` отсутствует, а `xvfb-run` найден, CTest автоматически оборачивает каждый GL-тест в отдельный Xvfb server. GoogleTest и его цели можно исключить из сборки через `-DBUILD_TESTING=OFF`.
+При `BUILD_TESTING=ON` — это стандартное значение CTest — CMake получает GoogleTest 1.17.0 через `FetchContent` из официального репозитория и строит шесть независимых test executables. Каждый из них связывается с `hw3d_modules` и `GTest::gtest_main`. GL-тесты дополнительно связываются с `hw3d_glad`, выполняются последовательно и запускаются с отключённой переменной `WAYLAND_DISPLAY`: это выбирает стабильный для повторной инициализации GLFW X11 backend. Если во время конфигурации `DISPLAY` отсутствует, а `xvfb-run` найден, CTest автоматически оборачивает каждый GL-тест в отдельный Xvfb server. GoogleTest и его цели можно исключить из сборки через `-DBUILD_TESTING=OFF`.
 
 Основные команды:
 
@@ -141,10 +148,10 @@ stdin -> Configuration
       -> cpu_collisions(Configuration::triangles)
       -> vector<bool> highlighted
       -> WindowContext создаёт окно, активный GL context и загружает GLAD
-      -> Renderer принимает triangles + flags, компилирует shaders и создаёт VAO/VBO
-      -> main регистрирует renderer callbacks на стрелки и мышь
-      -> WindowContext::run(render_frame)
-      -> WindowContext передаёт delta time движению, а mouse offsets вращению
+      -> Renderer принимает triangles + flags, создаёт VAO/VBO и через ShaderProgram компилирует встроенные shaders
+      -> main передаёт WindowContext один C++-обработчик кадра
+      -> WindowContext::run собирает FrameInput после обработки событий
+      -> main применяет mouse offsets и стрелки к камере, затем вызывает Renderer::render
       -> Renderer очищает buffers и рисует Lambert-lit заполнение с каймой каждый кадр
       -> Esc/закрытие окна завершает цикл
       -> RAII сначала освобождает renderer, затем окно и GLFW
@@ -162,7 +169,7 @@ stdin
   -> окно и OpenGL-контекст из hw3d.window_context
 ```
 
-`main.cpp` является composition root: он должен связывать модули, выбирать вычислительный backend, передавать данные между ними и регистрировать callback-функции. Алгоритмы геометрии, детали OpenGL и работа GLFW не должны реализовываться в `main.cpp`.
+`main.cpp` является composition root: он должен связывать модули, выбирать вычислительный backend, передавать данные между ними и сопоставлять состояние ввода с методами renderer. Алгоритмы геометрии, детали OpenGL и работа GLFW не должны реализовываться в `main.cpp`.
 
 Целевой жизненный цикл приложения:
 
@@ -171,7 +178,7 @@ stdin
 3. подготовить графические ресурсы;
 4. вычислить отметки пересечений выбранным backend;
 5. передать треугольники и отметки renderer-модулю;
-6. зарегистрировать обработчики клавиатуры и изменения размера окна;
+6. передать окну обработчик кадра, который применяет ввод и рисует сцену;
 7. выполнять цикл обработки событий, движения камеры и отрисовки;
 8. освободить GPU-ресурсы до уничтожения контекста.
 
@@ -244,25 +251,14 @@ struct Configuration {
 Модуль реализован поверх GLFW и скрывает GLFW-типы за PImpl. Публичный контракт:
 
 ```cpp
-enum class ArrowKey { up, down, left, right };
-
-using WindowCallbackFunction = void (*)(void*) noexcept;
-using MovementCallbackFunction = void (*)(void*, float) noexcept;
-using MouseMoveCallbackFunction = void (*)(void*, float, float) noexcept;
-
-struct WindowCallback {
-    WindowCallbackFunction function = nullptr;
-    void* context = nullptr;
-};
-
-struct MovementCallback {
-    MovementCallbackFunction function = nullptr;
-    void* context = nullptr;
-};
-
-struct MouseMoveCallback {
-    MouseMoveCallbackFunction function = nullptr;
-    void* context = nullptr;
+struct FrameInput {
+    bool up = false;
+    bool down = false;
+    bool left = false;
+    bool right = false;
+    float mouse_x_offset = 0.0F;
+    float mouse_y_offset = 0.0F;
+    float delta_seconds = 0.0F;
 };
 
 class WindowContext final {
@@ -270,9 +266,7 @@ public:
     WindowContext(int width, int height, const char* title);
     ~WindowContext();
 
-    void register_arrow_callback(ArrowKey, MovementCallback) noexcept;
-    void register_mouse_move_callback(MouseMoveCallback) noexcept;
-    void run(WindowCallback frame_callback = {});
+    void run(std::function<void(const FrameInput&)> on_frame = {});
     void request_close() noexcept;
 
     // Копирование и перемещение запрещены.
@@ -282,22 +276,21 @@ public:
 Контракт и текущее поведение:
 
 - одновременно допускается только один живой `WindowContext`;
-- создание, регистрация callback-функций, `run()` и уничтожение выполняются в одном главном потоке приложения;
+- создание, `run()` и уничтожение выполняются в одном главном потоке приложения;
 - размеры должны быть положительными, а `title` — не `nullptr`;
 - constructor инициализирует GLFW, запрашивает OpenGL 4.6 Core Forward-Compatible context, создаёт окно, делает context текущим, загружает GLAD и включает VSync через interval `1`;
 - ошибки аргументов, повторный экземпляр, ошибка GLFW и ошибка создания окна сообщаются исключениями;
-- все callback-контракты состоят из `noexcept`-функции и непрозрачного context pointer; `function == nullptr` означает отсутствие обработчика;
 - при создании окна cursor переводится в `GLFW_CURSOR_DISABLED`, поэтому мышь скрыта и захвачена окном; если GLFW поддерживает raw mouse motion, он также включается;
-- первое событие курсора только инициализирует предыдущую позицию, последующие передают `(x_offset, y_offset)`; положительный `y_offset` соответствует движению мыши вверх;
+- первое событие курсора только инициализирует предыдущую позицию, последующие накапливают смещения до следующего кадра; положительный `mouse_y_offset` соответствует движению мыши вверх;
 - удерживаемые стрелки опрашиваются каждый кадр через `glfwGetKey`, а не через системный key-repeat;
-- movement callback получает `delta_seconds`; значение считается через `glfwGetTime` и ограничивается максимумом `0.1`, чтобы длинная пауза не вызвала скачок камеры;
+- `delta_seconds` считается через `glfwGetTime` и ограничивается максимумом `0.1`, чтобы длинная пауза не вызвала скачок камеры;
 - `Esc` выставляет GLFW window-close flag; отдельного exit-callback нет;
-- `run()` обрабатывает события, вызывает callbacks удерживаемых стрелок, вызывает frame callback и меняет front/back buffers, пока window-close flag не установлен;
+- `run()` обрабатывает события, прекращает цикл при window-close flag, формирует `FrameInput`, обнуляет накопленные смещения мыши, вызывает один C++-обработчик кадра, если он задан, и меняет front/back buffers;
 - `request_close()` позволяет выставить тот же флаг программно;
 - framebuffer-size callback обновляет OpenGL viewport, включая первоначальный размер framebuffer;
 - destructor уничтожает окно и вызывает `glfwTerminate()`.
 
-Callback-функции обязаны быть `noexcept`, потому что GLFW вызывает свои trampolines через C API. Окно не владеет функциями или объектами по context pointers; все они должны оставаться валидными до завершения event loop.
+Только внутренние обработчики GLFW обязаны быть `noexcept`, поскольку вызываются через C API. Они не вызывают пользовательский код. Обработчик `on_frame` вызывается из C++-цикла; его исключение выходит из `run()` обычным способом. `FrameInput` действителен на время вызова обработчика; если он сохраняет ссылки на другие объекты, они должны оставаться живыми до завершения `run()`.
 
 Ответственность модуля:
 
@@ -306,17 +299,41 @@ Callback-функции обязаны быть `noexcept`, потому что 
 - создание и активация OpenGL-контекста;
 - обработка событий;
 - регистрация callback-функций GLFW;
-- маршрутизация клавиатурного ввода в зарегистрированные callback-функции;
-- захват мыши и маршрутизация относительного движения курсора;
+- опрос удерживаемых стрелок и формирование состояния ввода за кадр;
+- захват мыши и накопление её относительного движения между кадрами;
 - предоставление безопасной точки вызова отрисовки при активном контексте.
 
 Этот модуль не должен вычислять пересечения и владеть алгоритмами рендеринга треугольников.
+
+### `hw3d.shader_program`
+
+Файлы: `src/shader_program/shader_program.cppm` и `src/shader_program/shader_program.cpp`.
+
+Модуль скрывает OpenGL-типы в реализации и экспортирует перемещаемый, некопируемый владеющий объект:
+
+```cpp
+class ShaderProgram final {
+public:
+    static ShaderProgram graphics(
+        std::string_view vertex_source,
+        std::string_view fragment_source);
+    static ShaderProgram compute(std::string_view source);
+    ~ShaderProgram();
+    ShaderProgram(ShaderProgram&&) noexcept;
+    ShaderProgram& operator=(ShaderProgram&&) noexcept;
+
+    void use() const noexcept;
+    int uniform_location(const char* name) const noexcept;
+};
+```
+
+Фабрики компилируют указанные стадии, линкуют программу и удаляют промежуточные shader objects. При ошибке освобождаются уже созданные объекты; исключение содержит название стадии либо сообщение о линковке и журнал драйвера. Деструктор удаляет программу. Для всех вызовов и уничтожения нужен активный OpenGL-контекст и загруженный GLAD. Модуль не зависит от окна, renderer или алгоритма пересечений и не управляет uniforms, рисованием, compute dispatch, буферами или барьерами.
 
 ### `hw3d.renderer`
 
 Файлы: `src/renderer/renderer.cppm` и `src/renderer/renderer.cpp`.
 
-Модуль импортирует `hw3d.configuration`, скрывает OpenGL-типы за PImpl и экспортирует следующий основной API:
+Модуль импортирует `hw3d.configuration` и `hw3d.shader_program`, скрывает OpenGL-типы за PImpl и экспортирует следующий основной API:
 
 ```cpp
 class Renderer final {
@@ -335,19 +352,9 @@ public:
 
     // Копирование и перемещение запрещены.
 };
-
-void render_frame(void* renderer) noexcept;
-void move_camera_forward(void* renderer, float delta_seconds) noexcept;
-void move_camera_back(void* renderer, float delta_seconds) noexcept;
-void move_camera_left(void* renderer, float delta_seconds) noexcept;
-void move_camera_right(void* renderer, float delta_seconds) noexcept;
-void rotate_camera(
-    void* renderer,
-    float x_offset,
-    float y_offset) noexcept;
 ```
 
-Свободные функции являются адаптерами для frame, movement и mouse callbacks окна: при ненулевом указателе они вызывают соответствующий метод `Renderer`, при `nullptr` ничего не делают.
+Renderer не импортирует `hw3d.window_context`: сопоставление `FrameInput` с методами камеры выполняет `main.cpp`.
 
 Constructor не принимает `Configuration`: его контракт состоит только из массива треугольников и параллельного массива отметок. Он требует существующий активный OpenGL context и загруженный GLAD, отклоняет пустой массив треугольников и несовпадающие размеры массивов через `std::invalid_argument`. Входные массивы нужны только на время constructor: renderer преобразует и копирует их в GPU buffer, но не хранит ссылки.
 
@@ -357,8 +364,8 @@ Constructor не принимает `Configuration`: его контракт с�
 - разворачивает каждый `Triangle` в три вершины по десять `float`: position `xyz`, barycentric `xyz`, highlight flag и normal `xyz`;
 - повторяет значение `highlighted[i]` для всех трёх вершин треугольника `i`;
 - создаёт VAO и VBO и загружает вершины с `GL_STATIC_DRAW`;
-- читает скопированные vertex/fragment shader-файлы, компилирует их и линкует program;
-- сообщает ошибки чтения, компиляции, линковки и отсутствующий uniform через исключения;
+- создаёт `ShaderProgram` из встроенных в заголовок vertex/fragment shaders;
+- сообщает ошибки компиляции, линковки и отсутствующий uniform через исключения;
 - включает depth test с функцией сравнения `GL_LESS`;
 - вычисляет bounding box и охватывающую его сферу, ставит камеру по центру перед сценой и выбирает scale-dependent шаг движения.
 
@@ -425,12 +432,12 @@ Narrow phase пары:
 
 Файлы: `src/gpu_intersections/gpu_intersections.cppm`, `src/gpu_intersections/gpu_intersections.cpp` и `src/gpu_intersections/shaders/intersections.comp.glsl`.
 
-Текущее состояние: C++-модуль не имеет публичного API; shader содержит только `#version 460 core` и пустой `main`. Эта версия shader предполагает OpenGL 4.6, если директива не будет изменена. CMake пока не компилирует и не копирует shader для приложения и не задаёт способ поиска файла во время выполнения. Отдельный GPU-тест получает абсолютный source-путь через приватное compile definition и проверяет компиляцию shader настоящим OpenGL driver.
+Текущее состояние: модуль экспортирует `gpu_collisions(const std::vector<Triangle>&)` с контрактом результата `std::vector<bool>`, но пока возвращает `true` для каждого треугольника без вычислений. Compute shader OpenGL 4.6 содержит пробную проверку площади (`S > 5.0`), принимает массив треугольников через SSBO binding 0 и пишет целочисленные отметки в SSBO binding 1. CMake встраивает его текст в `embedded_shaders.hpp`; отдельный GPU-тест создаёт из него `ShaderProgram::compute` и проверяет линковку настоящим OpenGL driver. `gpu_collisions` пока не использует shader.
 
 Целевая ответственность:
 
 - создание GPU buffers с геометрией и отметками;
-- компиляция и запуск GLSL compute shader;
+- создание программы через `hw3d.shader_program` и запуск GLSL compute shader;
 - корректная синхронизация compute-операций;
 - получение `std::vector<bool>` в том же логическом формате, что у CPU backend;
 - управление только теми OpenGL-ресурсами, которые относятся к вычислению пересечений.
@@ -441,14 +448,13 @@ GPU backend требует активного OpenGL-контекста. Его 
 
 Текущее поведение:
 
-- импортирует все пять модулей;
+- импортирует конфигурацию, окно, renderer и CPU-модуль пересечений;
 - вызывает `hw3d::read_configuration(std::cin)`;
 - вызывает `hw3d::cpu_collisions(configuration.triangles)` и получает `highlighted`;
 - создаёт окно `1280 x 720` с заголовком `HW3D`;
 - создаёт `Renderer` из `configuration.triangles` и CPU-отметок после создания активного GL context;
-- регистрирует `move_camera_forward`, `move_camera_back`, `move_camera_left` и `move_camera_right`, передавая адрес renderer как callback context;
-- регистрирует `rotate_camera` как mouse-move callback с тем же context;
-- запускает event loop с `render_frame` и тем же renderer context;
+- передаёт `WindowContext::run` одну лямбду, захватывающую renderer по ссылке;
+- внутри лямбды сначала поворачивает камеру по накопленному смещению мыши, затем применяет удерживаемые стрелки в порядке up/down/left/right и вызывает `Renderer::render()`;
 - объявляет renderer после окна, поэтому при выходе renderer уничтожается первым и освобождает OpenGL-ресурсы при ещё активном context;
 - после штатного выхода из цикла возвращает `0`;
 - перехватывает `std::exception`, печатает `what()` в `stderr` и возвращает `1`.
@@ -461,13 +467,14 @@ GPU backend требует активного OpenGL-контекста. Его 
 
 - `configuration_tests` содержит 10 тестов: корректное чтение одного и нескольких треугольников, whitespace, trailing data, вырожденные данные, отсутствующий и некорректный count, обе границы count и нумерацию неполного треугольника;
 - `cpu_intersections_tests` содержит 23 теста публичной функции `cpu_collisions`: пустой/единичный вход, одинаковые, вложенные, раздельные, компланарные и некомпланарные треугольники, касание ребром/вершиной, порядок пары, выборочное выставление flags, sparse voxels, положительный зазор и вырожденные point/segment комбинации;
-- `window_context_tests` содержит 9 тестов: валидацию constructor, запрет второго живого экземпляра, повторное создание после destruction, программное закрытие, frame callback и регистрацию пустых/заполненных callbacks во всех input slots;
-- `renderer_tests` содержит 9 тестов с настоящим OpenGL context: ошибки constructor, состояние depth test, фактические gray/red pixels, сравнение слабого ambient с направленным diffuse, все методы движения и вращения, все свободные callback adapters, `nullptr` context и нулевой viewport;
-- `gpu_intersections_tests` содержит один тест, поскольку модуль пока не имеет API: он импортирует модуль, читает placeholder compute shader и проверяет его успешную компиляцию настоящим OpenGL driver.
+- `window_context_tests` содержит 9 тестов: валидацию constructor, запрет второго живого экземпляра, повторное создание после destruction, закрытие до кадра, снимок ввода за один кадр, пустой обработчик и передачу исключения из обработчика;
+- `shader_program_tests` содержит 5 GL-тестов: graphics/compute программы, ошибки компиляции и линковки, использование программы и перемещение владельца;
+- `renderer_tests` содержит 7 тестов с настоящим OpenGL context: ошибки constructor, состояние depth test, фактические gray/red pixels, сравнение слабого ambient с направленным diffuse, методы движения и вращения и нулевой viewport;
+- `gpu_intersections_tests` содержит один тест: он импортирует модуль, создаёт и использует программу из встроенного compute shader через общий API.
 
-Всего выполняется 52 GoogleTest case. Тесты обращаются только к публичному API модулей; внутренние функции implementation units покрываются транзитивно через публичные сценарии и не экспортируются специально ради тестирования. GLFW не предоставляет публичному модулю способ синтетически нажать стрелку или сдвинуть cursor, поэтому хранение callbacks проверяется регистрацией, а их маршрутизация от реальных устройств остаётся smoke/manual проверкой. При появлении injectable input backend это ограничение следует заменить автоматическими проверками значений `delta_seconds` и mouse offsets.
+Всего выполняется 55 GoogleTest case. Тесты обращаются только к публичному API модулей; внутренние функции implementation units покрываются транзитивно через публичные сценарии и не экспортируются специально ради тестирования. GLFW не предоставляет публичному модулю способ синтетически нажать стрелку или сдвинуть cursor, поэтому снимок ввода проверяется без искусственных событий, а реакция на реальные устройства остаётся smoke/manual проверкой. При появлении injectable input backend это ограничение следует заменить автоматическими проверками состояний стрелок и накопленных mouse offsets.
 
-Три GL-набора требуют работающий OpenGL 4.6 driver. CTest запускает их последовательно, через X11, и при headless-конфигурации использует `xvfb-run`, если он доступен. Провал создания контекста считается ошибкой теста, а не молчаливым skip.
+Четыре GL-набора требуют работающий OpenGL 4.6 driver. CTest запускает их последовательно, через X11, и при headless-конфигурации использует `xvfb-run`, если он доступен. Провал создания контекста считается ошибкой теста, а не молчаливым skip.
 
 ## Архитектурные границы
 
@@ -475,10 +482,11 @@ GPU backend требует активного OpenGL-контекста. Его 
 - Конфигурационный модуль отвечает только за представление и чтение входа.
 - Вычислительные модули отвечают только за обнаружение пересечений и формирование отметок.
 - Renderer отвечает только за графические ресурсы и изображение сцены.
+- `ShaderProgram` отвечает за компиляцию, линковку, выбор и освобождение OpenGL-программ; renderer и GPU backend отвечают за данные и команды конкретной задачи.
 - Window context отвечает за окно, контекст, event loop и маршрутизацию ввода, но не знает о renderer и камере.
 - `main.cpp` отвечает за связывание компонентов, но не содержит их внутренней логики.
-- Связь window context и renderer инвертирована через callback-функции и `void*` context: окно вызывает зарегистрированные функции, не импортируя renderer.
-- Callback-функции, переданные окну, не должны бросать исключения.
+- Window context передаёт `FrameInput` в один C++-обработчик кадра и не импортирует renderer; `main.cpp` сопоставляет данные ввода с методами камеры.
+- Внутренние callback-функции GLFW не вызывают пользовательский код и не должны бросать исключения; исключения обработчика кадра могут выходить из `run()`.
 - Нельзя размещать CPU-проверку пересечений внутри renderer или window context.
 - Нельзя дублировать типы `Vec3`, `Triangle` или контракт массива отметок в нескольких несовместимых вариантах.
 

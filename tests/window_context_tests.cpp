@@ -1,30 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <stdexcept>
 
 import hw3d.window_context;
 
 namespace {
-
-struct FrameState {
-    hw3d::WindowContext* window;
-    int calls;
-};
-
-void close_after_frame(void* const context) noexcept
-{
-    auto& state = *static_cast<FrameState*>(context);
-    ++state.calls;
-    state.window->request_close();
-}
-
-void movement_callback(void*, float) noexcept
-{
-}
-
-void mouse_callback(void*, float, float) noexcept
-{
-}
 
 TEST(WindowContext, RejectsNonPositiveWidth)
 {
@@ -76,58 +57,53 @@ TEST(WindowContext, CanBeCreatedAgainAfterDestruction)
 TEST(WindowContext, RequestCloseStopsBeforeFrameCallback)
 {
     hw3d::WindowContext window{64, 64, "close"};
-    FrameState state{&window, 0};
+    int calls = 0;
 
     window.request_close();
-    window.run({&close_after_frame, &state});
+    window.run([&calls](const hw3d::FrameInput&) { ++calls; });
 
-    EXPECT_EQ(state.calls, 0);
+    EXPECT_EQ(calls, 0);
 }
 
-TEST(WindowContext, RunForwardsContextToFrameCallback)
+TEST(WindowContext, RunProvidesOneFrameInput)
 {
-    hw3d::WindowContext window{64, 64, "frame callback"};
-    FrameState state{&window, 0};
+    hw3d::WindowContext window{64, 64, "frame input"};
+    int calls = 0;
 
-    window.run({&close_after_frame, &state});
+    window.run([&](const hw3d::FrameInput& input) {
+        ++calls;
+        EXPECT_FALSE(input.up);
+        EXPECT_FALSE(input.down);
+        EXPECT_FALSE(input.left);
+        EXPECT_FALSE(input.right);
+        EXPECT_TRUE(std::isfinite(input.mouse_x_offset));
+        EXPECT_TRUE(std::isfinite(input.mouse_y_offset));
+        EXPECT_GE(input.delta_seconds, 0.0F);
+        EXPECT_LE(input.delta_seconds, 0.1F);
+        window.request_close();
+    });
 
-    EXPECT_EQ(state.calls, 1);
+    EXPECT_EQ(calls, 1);
 }
 
-TEST(WindowContext, AcceptsEmptyCallbacksForEveryInputSlot)
+TEST(WindowContext, AcceptsEmptyFrameCallback)
 {
-    hw3d::WindowContext window{64, 64, "empty callbacks"};
+    hw3d::WindowContext window{64, 64, "empty frame callback"};
 
-    window.register_arrow_callback(hw3d::ArrowKey::up, {});
-    window.register_arrow_callback(hw3d::ArrowKey::down, {});
-    window.register_arrow_callback(hw3d::ArrowKey::left, {});
-    window.register_arrow_callback(hw3d::ArrowKey::right, {});
-    window.register_mouse_move_callback({});
-    window.request_close();
-
-    EXPECT_NO_THROW(window.run());
-}
-
-TEST(WindowContext, AcceptsPopulatedCallbacksForEveryInputSlot)
-{
-    hw3d::WindowContext window{64, 64, "populated callbacks"};
-
-    window.register_arrow_callback(
-        hw3d::ArrowKey::up,
-        {&movement_callback, nullptr});
-    window.register_arrow_callback(
-        hw3d::ArrowKey::down,
-        {&movement_callback, nullptr});
-    window.register_arrow_callback(
-        hw3d::ArrowKey::left,
-        {&movement_callback, nullptr});
-    window.register_arrow_callback(
-        hw3d::ArrowKey::right,
-        {&movement_callback, nullptr});
-    window.register_mouse_move_callback({&mouse_callback, nullptr});
     window.request_close();
 
     EXPECT_NO_THROW(window.run());
+}
+
+TEST(WindowContext, PropagatesFrameCallbackException)
+{
+    hw3d::WindowContext window{64, 64, "throwing frame callback"};
+
+    EXPECT_THROW(
+        window.run([](const hw3d::FrameInput&) {
+            throw std::runtime_error("frame failure");
+        }),
+        std::runtime_error);
 }
 
 }

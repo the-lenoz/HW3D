@@ -1,46 +1,26 @@
 #include <gtest/gtest.h>
 
 #include <glad/gl.h>
-
-#include <algorithm>
-#include <fstream>
-#include <iterator>
-#include <string>
+#include "embedded_shaders.hpp"
 
 import hw3d.gpu_intersections;
+import hw3d.shader_program;
 import hw3d.window_context;
 
 namespace {
 
-TEST(GpuIntersections, PlaceholderComputeShaderCompiles)
+TEST(GpuIntersections, EmbeddedComputeShaderLinksThroughSharedProgram)
 {
     hw3d::WindowContext window{64, 64, "GPU intersections test"};
-    std::ifstream input{HW3D_GPU_SHADER_PATH};
-    ASSERT_TRUE(input.is_open());
+    const auto program = hw3d::ShaderProgram::compute(
+        hw3d::shaders::intersections_comp_glsl);
 
-    const std::string source{
-        std::istreambuf_iterator<char>{input},
-        std::istreambuf_iterator<char>{}};
-    ASSERT_FALSE(source.empty());
-
-    const GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-    ASSERT_NE(shader, 0U);
-    const char* const source_pointer = source.c_str();
-    glShaderSource(shader, 1, &source_pointer, nullptr);
-    glCompileShader(shader);
-
-    GLint compiled{};
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-    GLint log_length{};
-    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_length);
-    std::string log(
-        static_cast<std::size_t>(std::max(log_length, 1)),
-        '\0');
-    glGetShaderInfoLog(shader, log_length, nullptr, log.data());
-
-    EXPECT_EQ(compiled, GL_TRUE) << log;
-    glDeleteShader(shader);
+    program.use();
+    GLint bound_program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &bound_program);
+    EXPECT_GT(bound_program, 0);
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
+    glUseProgram(0);
 }
 
 }

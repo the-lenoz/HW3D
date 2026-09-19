@@ -5,8 +5,7 @@ module;
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
-#include <array>
-#include <cstddef>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -17,22 +16,6 @@ namespace hw3d {
 namespace {
 
 bool window_context_exists = false;
-
-constexpr std::size_t arrow_index(const ArrowKey key) noexcept
-{
-    switch (key) {
-    case ArrowKey::up:
-        return 0;
-    case ArrowKey::down:
-        return 1;
-    case ArrowKey::left:
-        return 2;
-    case ArrowKey::right:
-        return 3;
-    }
-
-    return 0;
-}
 
 }
 
@@ -114,20 +97,7 @@ public:
         window_context_exists = false;
     }
 
-    void register_arrow_callback(
-        const ArrowKey key,
-        const MovementCallback callback) noexcept
-    {
-        arrow_callbacks_[arrow_index(key)] = callback;
-    }
-
-    void register_mouse_move_callback(
-        const MouseMoveCallback callback) noexcept
-    {
-        mouse_move_callback_ = callback;
-    }
-
-    void run(const WindowCallback frame_callback)
+    void run(const std::function<void(const FrameInput&)>& on_frame)
     {
         double previous_time = glfwGetTime();
 
@@ -144,10 +114,20 @@ public:
                 0.1));
             previous_time = current_time;
 
-            process_movement(delta_seconds);
+            const FrameInput input{
+                .up = glfwGetKey(window_, GLFW_KEY_UP) == GLFW_PRESS,
+                .down = glfwGetKey(window_, GLFW_KEY_DOWN) == GLFW_PRESS,
+                .left = glfwGetKey(window_, GLFW_KEY_LEFT) == GLFW_PRESS,
+                .right = glfwGetKey(window_, GLFW_KEY_RIGHT) == GLFW_PRESS,
+                .mouse_x_offset = mouse_x_offset_,
+                .mouse_y_offset = mouse_y_offset_,
+                .delta_seconds = delta_seconds,
+            };
+            mouse_x_offset_ = 0.0F;
+            mouse_y_offset_ = 0.0F;
 
-            if (frame_callback.function != nullptr) {
-                frame_callback.function(frame_callback.context);
+            if (on_frame) {
+                on_frame(input);
             }
 
             glfwSwapBuffers(window_);
@@ -190,17 +170,12 @@ private:
             return;
         }
 
-        const float x_offset = static_cast<float>(
+        self->mouse_x_offset_ += static_cast<float>(
             x_position - self->last_cursor_x_);
-        const float y_offset = static_cast<float>(
+        self->mouse_y_offset_ += static_cast<float>(
             self->last_cursor_y_ - y_position);
         self->last_cursor_x_ = x_position;
         self->last_cursor_y_ = y_position;
-
-        const auto [function, context] = self->mouse_move_callback_;
-        if (function != nullptr) {
-            function(context, x_offset, y_offset);
-        }
     }
 
     static void on_framebuffer_size(
@@ -211,32 +186,11 @@ private:
         glViewport(0, 0, width, height);
     }
 
-    void process_movement(const float delta_seconds) noexcept
-    {
-        constexpr std::array<int, 4> glfw_keys{
-            GLFW_KEY_UP,
-            GLFW_KEY_DOWN,
-            GLFW_KEY_LEFT,
-            GLFW_KEY_RIGHT,
-        };
-
-        for (std::size_t index = 0; index < glfw_keys.size(); ++index) {
-            if (glfwGetKey(window_, glfw_keys[index]) != GLFW_PRESS) {
-                continue;
-            }
-
-            const auto [function, context] = arrow_callbacks_[index];
-            if (function != nullptr) {
-                function(context, delta_seconds);
-            }
-        }
-    }
-
     GLFWwindow* window_ = nullptr;
-    std::array<MovementCallback, 4> arrow_callbacks_{};
-    MouseMoveCallback mouse_move_callback_{};
     double last_cursor_x_{};
     double last_cursor_y_{};
+    float mouse_x_offset_{};
+    float mouse_y_offset_{};
     bool first_mouse_event_ = true;
 };
 
@@ -250,22 +204,9 @@ WindowContext::WindowContext(
 
 WindowContext::~WindowContext() = default;
 
-void WindowContext::register_arrow_callback(
-    const ArrowKey key,
-    const MovementCallback callback) noexcept
+void WindowContext::run(std::function<void(const FrameInput&)> on_frame)
 {
-    impl_->register_arrow_callback(key, callback);
-}
-
-void WindowContext::register_mouse_move_callback(
-    const MouseMoveCallback callback) noexcept
-{
-    impl_->register_mouse_move_callback(callback);
-}
-
-void WindowContext::run(const WindowCallback frame_callback)
-{
-    impl_->run(frame_callback);
+    impl_->run(on_frame);
 }
 
 void WindowContext::request_close() noexcept
