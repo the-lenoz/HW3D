@@ -33,7 +33,6 @@ Triangle read_triangle(std::istream& input, const std::size_t index)
 
 Configuration read_configuration(std::istream& input)
 {
-    std::cout << std::format("{:%T}: {}:{}\n", std::chrono::system_clock::now(), __func__, __LINE__);
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(nullptr);
     std::int64_t triangle_count{};
