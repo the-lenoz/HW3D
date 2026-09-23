@@ -22,16 +22,6 @@ struct IndexedTriangle {
     Voxel voxel;
 };
 
-struct Vec2 {
-    float x;
-    float y;
-};
-
-struct Interval {
-    float minimum;
-    float maximum;
-};
-
 enum class PrimitiveKind {
     point,
     segment,
@@ -83,14 +73,18 @@ float length(const Vec3& vector) noexcept
     return std::sqrt(length_squared(vector));
 }
 
-Vec3 normalize(const Vec3& vector) noexcept
-{
-    return scale(vector, 1.0F / length(vector));
-}
-
 std::array<Vec3, 3> vertices(const Triangle& triangle) noexcept
 {
     return {triangle.a, triangle.b, triangle.c};
+}
+
+std::array<Vec3, 3> edges(const Triangle& triangle) noexcept
+{
+    return {
+        subtract(triangle.b, triangle.a),
+        subtract(triangle.c, triangle.a),
+        subtract(triangle.c, triangle.b),
+    };
 }
 
 float coordinate_scale(
@@ -125,162 +119,10 @@ float collision_tolerance(
         * coordinate_scale(left, right);
 }
 
-std::size_t dominant_axis(const Vec3& normal) noexcept
-{
-    const Vec3 absolute{
-        std::abs(normal.x),
-        std::abs(normal.y),
-        std::abs(normal.z),
-    };
-
-    if (absolute.x >= absolute.y && absolute.x >= absolute.z) {
-        return 0;
-    }
-    if (absolute.y >= absolute.z) {
-        return 1;
-    }
-    return 2;
-}
-
-Vec2 project_2d(const Vec3& point, const std::size_t dropped_axis) noexcept
-{
-    if (dropped_axis == 0) {
-        return {point.y, point.z};
-    }
-    if (dropped_axis == 1) {
-        return {point.x, point.z};
-    }
-    return {point.x, point.y};
-}
-
-float orientation(
-    const Vec2& first,
-    const Vec2& second,
-    const Vec2& third) noexcept
-{
-    return (second.x - first.x) * (third.y - first.y)
-        - (second.y - first.y) * (third.x - first.x);
-}
-
-float segment_length_2d(const Vec2& first, const Vec2& second) noexcept
-{
-    const float x = second.x - first.x;
-    const float y = second.y - first.y;
-    return std::sqrt(x * x + y * y);
-}
-
-bool point_on_segment_2d(
-    const Vec2& point,
-    const Vec2& first,
-    const Vec2& second,
-    const float tolerance) noexcept
-{
-    const float orientation_tolerance = tolerance
-        * std::max(segment_length_2d(first, second), 1.0F);
-    return std::abs(orientation(first, second, point))
-            <= orientation_tolerance
-        && point.x >= std::min(first.x, second.x) - tolerance
-        && point.x <= std::max(first.x, second.x) + tolerance
-        && point.y >= std::min(first.y, second.y) - tolerance
-        && point.y <= std::max(first.y, second.y) + tolerance;
-}
-
-bool segments_intersect_2d(
-    const Vec2& first_a,
-    const Vec2& second_a,
-    const Vec2& first_b,
-    const Vec2& second_b,
-    const float tolerance) noexcept
-{
-    const float a = orientation(first_a, second_a, first_b);
-    const float b = orientation(first_a, second_a, second_b);
-    const float c = orientation(first_b, second_b, first_a);
-    const float d = orientation(first_b, second_b, second_a);
-    const float tolerance_a = tolerance
-        * std::max(segment_length_2d(first_a, second_a), 1.0F);
-    const float tolerance_b = tolerance
-        * std::max(segment_length_2d(first_b, second_b), 1.0F);
-
-    const bool crosses_a = (a > tolerance_a && b < -tolerance_a)
-        || (a < -tolerance_a && b > tolerance_a);
-    const bool crosses_b = (c > tolerance_b && d < -tolerance_b)
-        || (c < -tolerance_b && d > tolerance_b);
-    if (crosses_a && crosses_b) {
-        return true;
-    }
-
-    return point_on_segment_2d(first_b, first_a, second_a, tolerance)
-        || point_on_segment_2d(second_b, first_a, second_a, tolerance)
-        || point_on_segment_2d(first_a, first_b, second_b, tolerance)
-        || point_on_segment_2d(second_a, first_b, second_b, tolerance);
-}
-
-bool point_in_triangle_2d(
-    const Vec2& point,
-    const std::array<Vec2, 3>& triangle,
-    const float tolerance) noexcept
-{
-    const float first = orientation(triangle[0], triangle[1], point);
-    const float second = orientation(triangle[1], triangle[2], point);
-    const float third = orientation(triangle[2], triangle[0], point);
-    const float orientation_tolerance = tolerance * std::max({
-        segment_length_2d(triangle[0], triangle[1]),
-        segment_length_2d(triangle[1], triangle[2]),
-        segment_length_2d(triangle[2], triangle[0]),
-        1.0F,
-    });
-
-    const bool has_negative = first < -orientation_tolerance
-        || second < -orientation_tolerance
-        || third < -orientation_tolerance;
-    const bool has_positive = first > orientation_tolerance
-        || second > orientation_tolerance
-        || third > orientation_tolerance;
-    return !(has_negative && has_positive);
-}
-
-std::array<Vec2, 3> project_triangle(
-    const Triangle& triangle,
-    const std::size_t dropped_axis) noexcept
-{
-    return {
-        project_2d(triangle.a, dropped_axis),
-        project_2d(triangle.b, dropped_axis),
-        project_2d(triangle.c, dropped_axis),
-    };
-}
-
-bool coplanar_triangles_intersect(
-    const Triangle& left,
-    const Triangle& right,
-    const Vec3& normal,
-    const float tolerance) noexcept
-{
-    const std::size_t dropped_axis = dominant_axis(normal);
-    const auto left_2d = project_triangle(left, dropped_axis);
-    const auto right_2d = project_triangle(right, dropped_axis);
-
-    for (std::size_t left_edge = 0; left_edge < 3; ++left_edge) {
-        for (std::size_t right_edge = 0; right_edge < 3; ++right_edge) {
-            if (segments_intersect_2d(
-                    left_2d[left_edge],
-                    left_2d[(left_edge + 1) % 3],
-                    right_2d[right_edge],
-                    right_2d[(right_edge + 1) % 3],
-                    tolerance)) {
-                return true;
-            }
-        }
-    }
-
-    return point_in_triangle_2d(left_2d[0], right_2d, tolerance)
-        || point_in_triangle_2d(right_2d[0], left_2d, tolerance);
-}
-
 Primitive primitive(const Triangle& triangle, const float tolerance) noexcept
 {
     const std::array<Vec3, 3> points = vertices(triangle);
-    const std::array<std::array<std::size_t, 2>, 3> edges{{
+    const std::array<std::array<std::size_t, 2>, 3> vertex_pairs{{
         {0, 1},
         {1, 2},
         {2, 0},
@@ -288,12 +130,12 @@ Primitive primitive(const Triangle& triangle, const float tolerance) noexcept
 
     float longest_squared{};
     std::array<std::size_t, 2> longest_edge{0, 0};
-    for (const auto edge : edges) {
+    for (const auto pair : vertex_pairs) {
         const float squared = length_squared(
-            subtract(points[edge[1]], points[edge[0]]));
+            subtract(points[pair[1]], points[pair[0]]));
         if (squared > longest_squared) {
             longest_squared = squared;
-            longest_edge = edge;
+            longest_edge = pair;
         }
     }
 
@@ -315,6 +157,88 @@ Primitive primitive(const Triangle& triangle, const float tolerance) noexcept
     return {PrimitiveKind::triangle, {}, {}};
 }
 
+bool projections_overlap(
+    const Triangle& left,
+    const Triangle& right,
+    const Vec3& axis,
+    const float tolerance) noexcept
+{
+    const float axis_length = length(axis);
+    if (axis_length == 0.0F) {
+        return true;
+    }
+
+    const auto left_vertices = vertices(left);
+    const auto right_vertices = vertices(right);
+    float left_minimum = dot(left_vertices[0], axis);
+    float left_maximum = left_minimum;
+    float right_minimum = dot(right_vertices[0], axis);
+    float right_maximum = right_minimum;
+
+    for (std::size_t index = 1; index < 3; ++index) {
+        const float left_projection = dot(left_vertices[index], axis);
+        left_minimum = std::min(left_minimum, left_projection);
+        left_maximum = std::max(left_maximum, left_projection);
+
+        const float right_projection = dot(right_vertices[index], axis);
+        right_minimum = std::min(right_minimum, right_projection);
+        right_maximum = std::max(right_maximum, right_projection);
+    }
+
+    const float projected_tolerance = tolerance * axis_length;
+    return left_minimum <= right_maximum + projected_tolerance
+        && right_minimum <= left_maximum + projected_tolerance;
+}
+
+bool sat_intersection(
+    const Triangle& left,
+    const Triangle& right,
+    const float tolerance) noexcept
+{
+    const auto left_edges = edges(left);
+    const auto right_edges = edges(right);
+    const Vec3 left_normal = cross(left_edges[0], left_edges[1]);
+    const Vec3 right_normal = cross(right_edges[0], right_edges[1]);
+
+    if (!projections_overlap(left, right, left_normal, tolerance)
+        || !projections_overlap(left, right, right_normal, tolerance)) {
+        return false;
+    }
+
+    for (const Vec3& left_edge : left_edges) {
+        for (const Vec3& right_edge : right_edges) {
+            if (!projections_overlap(
+                    left,
+                    right,
+                    cross(left_edge, right_edge),
+                    tolerance)) {
+                return false;
+            }
+        }
+    }
+
+    for (const Vec3& edge : left_edges) {
+        if (!projections_overlap(
+                left,
+                right,
+                cross(left_normal, edge),
+                tolerance)) {
+            return false;
+        }
+    }
+    for (const Vec3& edge : right_edges) {
+        if (!projections_overlap(
+                left,
+                right,
+                cross(right_normal, edge),
+                tolerance)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 float point_segment_distance_squared(
     const Vec3& point,
     const Vec3& first,
@@ -330,8 +254,9 @@ float point_segment_distance_squared(
         dot(subtract(point, first), segment) / denominator,
         0.0F,
         1.0F);
-    return length_squared(
-        subtract(point, add(first, scale(segment, parameter))));
+    return length_squared(subtract(
+        point,
+        add(first, scale(segment, parameter))));
 }
 
 float segment_segment_distance_squared(
@@ -371,83 +296,121 @@ float segment_segment_distance_squared(
     return length_squared(subtract(closest_a, closest_b));
 }
 
-bool point_on_triangle(
+float point_triangle_distance_squared(
     const Vec3& point,
-    const Triangle& triangle,
-    const Vec3& normal,
-    const float tolerance) noexcept
+    const Triangle& triangle) noexcept
 {
-    const Vec3 unit_normal = normalize(normal);
-    if (std::abs(dot(unit_normal, subtract(point, triangle.a))) > tolerance) {
-        return false;
+    const Vec3 ab = subtract(triangle.b, triangle.a);
+    const Vec3 ac = subtract(triangle.c, triangle.a);
+    const Vec3 ap = subtract(point, triangle.a);
+    const float d1 = dot(ab, ap);
+    const float d2 = dot(ac, ap);
+    if (d1 <= 0.0F && d2 <= 0.0F) {
+        return length_squared(ap);
     }
 
-    const std::size_t dropped_axis = dominant_axis(unit_normal);
-    return point_in_triangle_2d(
-        project_2d(point, dropped_axis),
-        project_triangle(triangle, dropped_axis),
-        tolerance);
+    const Vec3 bp = subtract(point, triangle.b);
+    const float d3 = dot(ab, bp);
+    const float d4 = dot(ac, bp);
+    if (d3 >= 0.0F && d4 <= d3) {
+        return length_squared(bp);
+    }
+
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0F && d1 >= 0.0F && d3 <= 0.0F) {
+        const float parameter = d1 / (d1 - d3);
+        return length_squared(subtract(
+            point,
+            add(triangle.a, scale(ab, parameter))));
+    }
+
+    const Vec3 cp = subtract(point, triangle.c);
+    const float d5 = dot(ab, cp);
+    const float d6 = dot(ac, cp);
+    if (d6 >= 0.0F && d5 <= d6) {
+        return length_squared(cp);
+    }
+
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0F && d2 >= 0.0F && d6 <= 0.0F) {
+        const float parameter = d2 / (d2 - d6);
+        return length_squared(subtract(
+            point,
+            add(triangle.a, scale(ac, parameter))));
+    }
+
+    const float va = d3 * d6 - d5 * d4;
+    const float d43 = d4 - d3;
+    const float d56 = d5 - d6;
+    if (va <= 0.0F && d43 >= 0.0F && d56 >= 0.0F) {
+        const float parameter = d43 / (d43 + d56);
+        return length_squared(subtract(
+            point,
+            add(triangle.b, scale(
+                subtract(triangle.c, triangle.b),
+                parameter))));
+    }
+
+    const float denominator = 1.0F / (va + vb + vc);
+    const float v = vb * denominator;
+    const float w = vc * denominator;
+    const Vec3 closest = add(
+        triangle.a,
+        add(scale(ab, v), scale(ac, w)));
+    return length_squared(subtract(point, closest));
 }
 
 bool segment_intersects_triangle(
     const Vec3& first,
     const Vec3& second,
     const Triangle& triangle,
-    const Vec3& triangle_normal,
     const float tolerance) noexcept
 {
-    const Vec3 unit_normal = normalize(triangle_normal);
+    const float tolerance_squared = tolerance * tolerance;
+    const Vec3 normal = cross(
+        subtract(triangle.b, triangle.a),
+        subtract(triangle.c, triangle.a));
     const float first_distance = dot(
-        unit_normal,
+        normal,
         subtract(first, triangle.a));
     const float second_distance = dot(
-        unit_normal,
+        normal,
         subtract(second, triangle.a));
 
-    if ((first_distance > tolerance && second_distance > tolerance)
-        || (first_distance < -tolerance && second_distance < -tolerance)) {
-        return false;
-    }
-
-    const std::size_t dropped_axis = dominant_axis(unit_normal);
-    const auto triangle_2d = project_triangle(triangle, dropped_axis);
-    if (std::abs(first_distance) <= tolerance
-        && std::abs(second_distance) <= tolerance) {
-        const Vec2 first_2d = project_2d(first, dropped_axis);
-        const Vec2 second_2d = project_2d(second, dropped_axis);
-        if (point_in_triangle_2d(
-                first_2d,
-                triangle_2d,
-                tolerance)
-            || point_in_triangle_2d(
-                second_2d,
-                triangle_2d,
-                tolerance)) {
-            return true;
-        }
-
-        for (std::size_t edge = 0; edge < 3; ++edge) {
-            if (segments_intersect_2d(
-                    first_2d,
-                    second_2d,
-                    triangle_2d[edge],
-                    triangle_2d[(edge + 1) % 3],
-                    tolerance)) {
+    if (first_distance != second_distance) {
+        const float parameter = first_distance
+            / (first_distance - second_distance);
+        if (parameter >= 0.0F && parameter <= 1.0F) {
+            const Vec3 intersection = add(
+                first,
+                scale(subtract(second, first), parameter));
+            if (point_triangle_distance_squared(intersection, triangle)
+                <= tolerance_squared) {
                 return true;
             }
         }
-        return false;
     }
 
-    const float parameter = first_distance
-        / (first_distance - second_distance);
-    const Vec3 intersection = add(
-        first,
-        scale(subtract(second, first), parameter));
-    return point_in_triangle_2d(
-        project_2d(intersection, dropped_axis),
-        triangle_2d,
-        tolerance);
+    if (point_triangle_distance_squared(first, triangle)
+            <= tolerance_squared
+        || point_triangle_distance_squared(second, triangle)
+            <= tolerance_squared) {
+        return true;
+    }
+
+    const auto triangle_vertices = vertices(triangle);
+    for (std::size_t index = 0; index < 3; ++index) {
+        if (segment_segment_distance_squared(
+                first,
+                second,
+                triangle_vertices[index],
+                triangle_vertices[(index + 1) % 3])
+            <= tolerance_squared) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool degenerate_intersection(
@@ -455,8 +418,6 @@ bool degenerate_intersection(
     const Triangle& right,
     const Primitive& left_primitive,
     const Primitive& right_primitive,
-    const Vec3& left_normal,
-    const Vec3& right_normal,
     const float tolerance) noexcept
 {
     const float tolerance_squared = tolerance * tolerance;
@@ -467,7 +428,6 @@ bool degenerate_intersection(
             left_primitive.first,
             right_primitive.first)) <= tolerance_squared;
     }
-
     if (left_primitive.kind == PrimitiveKind::point
         && right_primitive.kind == PrimitiveKind::segment) {
         return point_segment_distance_squared(
@@ -490,105 +450,28 @@ bool degenerate_intersection(
             right_primitive.first,
             right_primitive.second) <= tolerance_squared;
     }
-
     if (left_primitive.kind == PrimitiveKind::point) {
-        return point_on_triangle(
+        return point_triangle_distance_squared(
             left_primitive.first,
-            right,
-            right_normal,
-            tolerance);
+            right) <= tolerance_squared;
     }
     if (right_primitive.kind == PrimitiveKind::point) {
-        return point_on_triangle(
+        return point_triangle_distance_squared(
             right_primitive.first,
-            left,
-            left_normal,
-            tolerance);
+            left) <= tolerance_squared;
     }
     if (left_primitive.kind == PrimitiveKind::segment) {
         return segment_intersects_triangle(
             left_primitive.first,
             left_primitive.second,
             right,
-            right_normal,
             tolerance);
     }
     return segment_intersects_triangle(
         right_primitive.first,
         right_primitive.second,
         left,
-        left_normal,
         tolerance);
-}
-
-std::array<float, 3> signed_distances(
-    const Triangle& triangle,
-    const Vec3& plane_point,
-    const Vec3& unit_normal) noexcept
-{
-    return {
-        dot(unit_normal, subtract(triangle.a, plane_point)),
-        dot(unit_normal, subtract(triangle.b, plane_point)),
-        dot(unit_normal, subtract(triangle.c, plane_point)),
-    };
-}
-
-bool separated_by_plane(
-    const std::array<float, 3>& distances,
-    const float tolerance) noexcept
-{
-    return std::all_of(
-               distances.begin(),
-               distances.end(),
-               [tolerance](const float distance) {
-                   return distance > tolerance;
-               })
-        || std::all_of(
-            distances.begin(),
-            distances.end(),
-            [tolerance](const float distance) {
-                return distance < -tolerance;
-            });
-}
-
-Interval line_interval(
-    const Triangle& triangle,
-    const std::array<float, 3>& distances,
-    const Vec3& line_direction,
-    const float tolerance) noexcept
-{
-    const auto points = vertices(triangle);
-    float minimum = std::numeric_limits<float>::max();
-    float maximum = std::numeric_limits<float>::lowest();
-
-    auto add_projection = [&](const Vec3& point) {
-        const float projection = dot(point, line_direction);
-        minimum = std::min(minimum, projection);
-        maximum = std::max(maximum, projection);
-    };
-
-    for (std::size_t index = 0; index < 3; ++index) {
-        if (std::abs(distances[index]) <= tolerance) {
-            add_projection(points[index]);
-        }
-    }
-
-    for (std::size_t edge = 0; edge < 3; ++edge) {
-        const std::size_t next = (edge + 1) % 3;
-        const float first_distance = distances[edge];
-        const float second_distance = distances[next];
-        if ((first_distance < -tolerance && second_distance > tolerance)
-            || (first_distance > tolerance
-                && second_distance < -tolerance)) {
-            const float parameter = first_distance
-                / (first_distance - second_distance);
-            add_projection(add(
-                points[edge],
-                scale(subtract(points[next], points[edge]), parameter)));
-        }
-    }
-
-    return {minimum, maximum};
 }
 
 bool triangles_intersect(
@@ -596,79 +479,20 @@ bool triangles_intersect(
     const Triangle& right) noexcept
 {
     const float tolerance = collision_tolerance(left, right);
-    const Vec3 left_normal = cross(
-        subtract(left.b, left.a),
-        subtract(left.c, left.a));
-    const Vec3 right_normal = cross(
-        subtract(right.b, right.a),
-        subtract(right.c, right.a));
-
     const Primitive left_primitive = primitive(left, tolerance);
     const Primitive right_primitive = primitive(right, tolerance);
-    if (left_primitive.kind != PrimitiveKind::triangle
-        || right_primitive.kind != PrimitiveKind::triangle) {
-        return degenerate_intersection(
-            left,
-            right,
-            left_primitive,
-            right_primitive,
-            left_normal,
-            right_normal,
-            tolerance);
+
+    if (left_primitive.kind == PrimitiveKind::triangle
+        && right_primitive.kind == PrimitiveKind::triangle) {
+        return sat_intersection(left, right, tolerance);
     }
 
-    const Vec3 left_unit_normal = normalize(left_normal);
-    const Vec3 right_unit_normal = normalize(right_normal);
-    const auto right_to_left_plane = signed_distances(
-        right,
-        left.a,
-        left_unit_normal);
-    if (separated_by_plane(right_to_left_plane, tolerance)) {
-        return false;
-    }
-
-    const auto left_to_right_plane = signed_distances(
+    return degenerate_intersection(
         left,
-        right.a,
-        right_unit_normal);
-    if (separated_by_plane(left_to_right_plane, tolerance)) {
-        return false;
-    }
-
-    const Vec3 line = cross(left_unit_normal, right_unit_normal);
-    const float line_length = length(line);
-    if (line_length <= 32.0F * std::numeric_limits<float>::epsilon()) {
-        const bool coplanar = std::all_of(
-            right_to_left_plane.begin(),
-            right_to_left_plane.end(),
-            [tolerance](const float distance) {
-                return std::abs(distance) <= tolerance;
-            });
-        if (!coplanar) {
-            return false;
-        }
-
-        return coplanar_triangles_intersect(
-            left,
-            right,
-            left_unit_normal,
-            tolerance);
-    }
-
-    const Vec3 line_direction = scale(line, 1.0F / line_length);
-    const Interval left_interval = line_interval(
-        left,
-        left_to_right_plane,
-        line_direction,
-        tolerance);
-    const Interval right_interval = line_interval(
         right,
-        right_to_left_plane,
-        line_direction,
+        left_primitive,
+        right_primitive,
         tolerance);
-
-    return left_interval.minimum <= right_interval.maximum + tolerance
-        && right_interval.minimum <= left_interval.maximum + tolerance;
 }
 
 }

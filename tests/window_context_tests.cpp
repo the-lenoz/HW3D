@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+
 #include <cmath>
 #include <stdexcept>
 
@@ -52,6 +55,26 @@ TEST(WindowContext, CanBeCreatedAgainAfterDestruction)
 
     hw3d::WindowContext second{64, 64, "second"};
     second.request_close();
+}
+
+TEST(WindowContext, HeadlessContextIsHiddenAndCanBeFollowedByVisibleWindow)
+{
+    {
+        hw3d::WindowContext hidden{64, 64, "hidden", true};
+        GLFWwindow* const current = glfwGetCurrentContext();
+
+        ASSERT_NE(current, nullptr);
+        EXPECT_EQ(
+            glfwGetWindowAttrib(current, GLFW_VISIBLE),
+            GLFW_FALSE);
+    }
+
+    hw3d::WindowContext visible{64, 64, "visible"};
+    GLFWwindow* const current = glfwGetCurrentContext();
+
+    ASSERT_NE(current, nullptr);
+    EXPECT_EQ(glfwGetWindowAttrib(current, GLFW_VISIBLE), GLFW_TRUE);
+    visible.request_close();
 }
 
 TEST(WindowContext, RequestCloseStopsBeforeFrameCallback)

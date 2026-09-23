@@ -112,6 +112,8 @@ add_executable(hw3d src/main.cpp)
 target_link_libraries(hw3d PRIVATE hw3d_modules)
 
 if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
@@ -175,6 +177,7 @@ if(BUILD_TESTING)
         window_context_tests
         tests/window_context_tests.cpp
     )
+    target_link_libraries(window_context_tests PRIVATE glfw)
     add_hw3d_gl_test(
         shader_program_tests
         tests/shader_program_tests.cpp
@@ -193,6 +196,57 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_BINARY_DIR}/generated"
     )
     add_dependencies(gpu_intersections_tests hw3d_shader_header)
+
+    set(HW3D_HEADLESS_E2E_SCRIPT
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_e2e.py")
+
+    add_test(
+        NAME headless_cpu_e2e
+        COMMAND
+            "${Python3_EXECUTABLE}"
+            "${HW3D_HEADLESS_E2E_SCRIPT}"
+            --binary "$<TARGET_FILE:hw3d>"
+            --backend cpu
+    )
+
+    if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
+        add_test(
+            NAME headless_gpu_e2e
+            COMMAND
+                "${HW3D_XVFB_RUN_EXECUTABLE}"
+                -a
+                "${Python3_EXECUTABLE}"
+                "${HW3D_HEADLESS_E2E_SCRIPT}"
+                --binary "$<TARGET_FILE:hw3d>"
+                --backend gpu
+        )
+    else()
+        add_test(
+            NAME headless_gpu_e2e
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${HW3D_HEADLESS_E2E_SCRIPT}"
+                --binary "$<TARGET_FILE:hw3d>"
+                --backend gpu
+        )
+    endif()
+
+    set_tests_properties(
+        headless_cpu_e2e
+        PROPERTIES
+            LABELS e2e
+            TIMEOUT 180
+            ENVIRONMENT_MODIFICATION
+                "DISPLAY=unset:;WAYLAND_DISPLAY=unset:"
+    )
+    set_tests_properties(
+        headless_gpu_e2e
+        PROPERTIES
+            LABELS e2e
+            RUN_SERIAL TRUE
+            TIMEOUT 180
+            ENVIRONMENT_MODIFICATION "WAYLAND_DISPLAY=unset:"
+    )
 
     set_tests_properties(
         window_context_tests

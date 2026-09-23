@@ -19,7 +19,11 @@ struct FrameInput {
 
 class WindowContext final {
 public:
-    WindowContext(int width, int height, const char* title);
+    WindowContext(
+        int width,
+        int height,
+        const char* title,
+        bool headless = false);
     ~WindowContext();
 
     WindowContext(const WindowContext&) = delete;

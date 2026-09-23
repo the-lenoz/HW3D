@@ -21,7 +21,11 @@ bool window_context_exists = false;
 
 class WindowContext::Impl final {
 public:
-    Impl(const int width, const int height, const char* const title)
+    Impl(
+        const int width,
+        const int height,
+        const char* const title,
+        const bool headless)
     {
         if (width <= 0 || height <= 0) {
             throw std::invalid_argument("window dimensions must be positive");
@@ -44,6 +48,7 @@ public:
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+        glfwWindowHint(GLFW_VISIBLE, headless ? GLFW_FALSE : GLFW_TRUE);
 
         window_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
         if (window_ == nullptr) {
@@ -69,14 +74,21 @@ public:
             throw std::runtime_error("failed to initialize GLAD");
         }
 
-        glfwSwapInterval(1);
-        glfwSetWindowUserPointer(window_, this);
-        glfwSetKeyCallback(window_, &Impl::on_key);
-        glfwSetCursorPosCallback(window_, &Impl::on_cursor_position);
-        glfwSetFramebufferSizeCallback(window_, &Impl::on_framebuffer_size);
-        glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
-            glfwSetInputMode(window_, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        if (!headless) {
+            glfwSwapInterval(1);
+            glfwSetWindowUserPointer(window_, this);
+            glfwSetKeyCallback(window_, &Impl::on_key);
+            glfwSetCursorPosCallback(window_, &Impl::on_cursor_position);
+            glfwSetFramebufferSizeCallback(
+                window_,
+                &Impl::on_framebuffer_size);
+            glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
+                glfwSetInputMode(
+                    window_,
+                    GLFW_RAW_MOUSE_MOTION,
+                    GLFW_TRUE);
+            }
         }
 
         int framebuffer_width{};
@@ -197,8 +209,9 @@ private:
 WindowContext::WindowContext(
     const int width,
     const int height,
-    const char* const title)
-    : impl_(std::make_unique<Impl>(width, height, title))
+    const char* const title,
+    const bool headless)
+    : impl_(std::make_unique<Impl>(width, height, title, headless))
 {
 }
 

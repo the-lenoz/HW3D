@@ -281,4 +281,76 @@ TEST(CpuIntersections, DoesNotMergeSmallPositiveGap)
     expect_collisions({base_triangle, nearby}, {false, false});
 }
 
+TEST(CpuIntersections, RejectsNonCoplanarTrianglesWithOverlappingAabbs)
+{
+    const Triangle outside = triangle(
+        {1.5F, 1.5F, -1.0F},
+        {1.5F, 1.5F, 1.0F},
+        {2.0F, 0.5F, 1.0F});
+
+    expect_collisions({base_triangle, outside}, {false, false});
+}
+
+TEST(CpuIntersections, RejectsNearlyParallelTriangleOutsideSharedPlane)
+{
+    const Triangle nearly_parallel = triangle(
+        {2.1F, 0.0F, 0.0F},
+        {0.0F, 2.1F, 0.0001F},
+        {2.1F, 2.1F, 0.0001F});
+
+    expect_collisions({base_triangle, nearly_parallel}, {false, false});
+}
+
+TEST(CpuIntersections, SatResultDoesNotDependOnVertexWinding)
+{
+    const Triangle reversed = triangle(
+        {0.5F, 1.5F, 0.0F},
+        {0.5F, 0.5F, 1.0F},
+        {0.5F, 0.5F, -1.0F});
+
+    expect_collisions({base_triangle, reversed}, {true, true});
+}
+
+TEST(CpuIntersections, DetectsDegeneratePointOnTriangleEdge)
+{
+    expect_collisions(
+        {base_triangle, point({1.0F, 1.0F, 0.0F})},
+        {true, true});
+}
+
+TEST(CpuIntersections, DetectsDegenerateSegmentInsideTriangle)
+{
+    const Triangle inside = segment(
+        {0.25F, 0.25F, 0.0F},
+        {0.75F, 0.25F, 0.0F});
+
+    expect_collisions({base_triangle, inside}, {true, true});
+}
+
+TEST(CpuIntersections, DetectsCoplanarSegmentTouchingTriangleEdge)
+{
+    const Triangle touching = segment(
+        {-1.0F, 1.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F});
+
+    expect_collisions({base_triangle, touching}, {true, true});
+}
+
+TEST(CpuIntersections, DistinguishesOverlappingAndDisjointCollinearSegments)
+{
+    const Triangle first = segment(
+        {0.0F, 0.0F, 0.0F},
+        {2.0F, 0.0F, 0.0F});
+    const Triangle overlapping = segment(
+        {1.0F, 0.0F, 0.0F},
+        {3.0F, 0.0F, 0.0F});
+    const Triangle disjoint = segment(
+        {4.0F, 0.0F, 0.0F},
+        {5.0F, 0.0F, 0.0F});
+
+    expect_collisions(
+        {first, overlapping, disjoint},
+        {true, true, false});
+}
+
 }
