@@ -145,4 +145,26 @@ Voxel voxel_for(const Vec3& point, const VoxelGrid& grid) noexcept
     };
 }
 
+bool is_degenerate(const Triangle& triangle)
+{
+    const Vector2<float> a_xy{triangle.a.x, triangle.a.y};
+    const Vector2<float> b_xy{triangle.b.x, triangle.b.y};
+    const Vector2<float> c_xy{triangle.c.x, triangle.c.y};
+    if (orient2d(a_xy, b_xy, c_xy) != Sign::zero) {
+        return false;
+    }
+
+    const Vector2<float> a_xz{triangle.a.x, triangle.a.z};
+    const Vector2<float> b_xz{triangle.b.x, triangle.b.z};
+    const Vector2<float> c_xz{triangle.c.x, triangle.c.z};
+    if (orient2d(a_xz, b_xz, c_xz) != Sign::zero) {
+        return false;
+    }
+
+    const Vector2<float> a_yz{triangle.a.y, triangle.a.z};
+    const Vector2<float> b_yz{triangle.b.y, triangle.b.z};
+    const Vector2<float> c_yz{triangle.c.y, triangle.c.z};
+    return orient2d(a_yz, b_yz, c_yz) == Sign::zero;
+}
+
 }

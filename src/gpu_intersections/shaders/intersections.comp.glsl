@@ -77,8 +77,6 @@ bool projectedIntersect(Triangle a, Triangle b, vec3 axis)
 
 bool triangleIntersect(Triangle a, Triangle b)
 {
-    const float eps = 1e-6;
-
     vec3 v1 = a.b - a.a;
     vec3 u1 = a.c - a.a;
     vec3 w1 = a.c - a.b;
@@ -115,7 +113,7 @@ bool triangleIntersect(Triangle a, Triangle b)
         cross(n2, w2)
     );
 
-    bool result = dot(n1, n1) > eps && dot(n2, n2) > eps;
+    bool result = dot(n1, n1) > 0.0 && dot(n2, n2) > 0.0;
     for (int i = 0; i < SAT_AXIS_COUNT; ++i)
     {
         result = result && projectedIntersect(a, b, axis[i]);

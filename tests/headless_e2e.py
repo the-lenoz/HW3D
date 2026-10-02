@@ -16,6 +16,7 @@ class GeometryCase:
     name: str
     triangles: Sequence[Triangle]
     expected: Sequence[bool]
+    expected_stderr: str = ""
 
 
 BASE: Triangle = (0, 0, 0, 2, 0, 0, 0, 2, 0)
@@ -111,7 +112,7 @@ COMMON_CASES = (
         (translated(BASE, 10000, -10000, 5000), translated(INNER, 10000, -10000, 5000)),
         (True, True),
     ),
-    GeometryCase("small scale", (scaled(BASE, 0.1), scaled(INNER, 0.1)), (True, True)),
+    GeometryCase("small scale", (scaled(BASE, 0.01), scaled(INNER, 0.01)), (True, True)),
 )
 
 
@@ -160,7 +161,18 @@ CPU_CASES = (
 
 def gpu_cases() -> Sequence[GeometryCase]:
     cases = [
-        GeometryCase("GPU ignores degenerate point", (BASE, point(0.5, 0.5, 0)), (False, False))
+        GeometryCase(
+            "GPU falls back for degenerate point",
+            (BASE, point(0.5, 0.5, 0)),
+            (True, True),
+            "warning: GPU intersections require non-degenerate triangles; falling back to CPU\n",
+        ),
+        GeometryCase(
+            "GPU falls back once for multiple degenerate triangles",
+            (BASE, point(0.5, 0.5, 0), segment((0, 0, 0), (1, 0, 0))),
+            (True, True, True),
+            "warning: GPU intersections require non-degenerate triangles; falling back to CPU\n",
+        ),
     ]
     for count in (63, 64, 65, 127, 128, 129):
         triangles = tuple(triangle_at(index * 4) for index in range(count))
@@ -240,6 +252,7 @@ class Runner:
             encode_triangles(case.triangles),
             0,
             encode_flags(case.expected),
+            case.expected_stderr,
         )
 
 

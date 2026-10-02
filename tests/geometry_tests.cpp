@@ -71,4 +71,50 @@ TEST(Geometry, UsesPositiveVoxelSizeForFlatGeometry)
               (hw3d::Voxel{0, 0, 0}));
 }
 
+TEST(Geometry, IdentifiesDegenerateTriangles)
+{
+    const hw3d::Triangle proper{
+        {0.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+    };
+    const hw3d::Triangle point{
+        {1.0F, 2.0F, 3.0F},
+        {1.0F, 2.0F, 3.0F},
+        {1.0F, 2.0F, 3.0F},
+    };
+    const hw3d::Triangle segment{
+        {-1.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F},
+        {-1.0F, 0.0F, 0.0F},
+    };
+
+    EXPECT_FALSE(hw3d::is_degenerate(proper));
+    EXPECT_TRUE(hw3d::is_degenerate(point));
+    EXPECT_TRUE(hw3d::is_degenerate(segment));
+}
+
+TEST(Geometry, DegeneracyIsInvariantForTranslationAndScale)
+{
+    const hw3d::Triangle proper{
+        {0.0F, 0.0F, 0.0F},
+        {2.0F, 0.0F, 0.0F},
+        {0.0F, 2.0F, 0.0F},
+    };
+    const hw3d::Triangle small{
+        {0.0F, 0.0F, 0.0F},
+        {2.0e-9F, 0.0F, 0.0F},
+        {0.0F, 2.0e-9F, 0.0F},
+    };
+    const hw3d::Triangle translated{
+        {1'000'000.0F, -1'000'000.0F, 500'000.0F},
+        {1'000'002.0F, -1'000'000.0F, 500'000.0F},
+        {1'000'000.0F, -999'998.0F, 500'000.0F},
+    };
+
+    EXPECT_FALSE(hw3d::is_degenerate(proper));
+    EXPECT_FALSE(hw3d::is_degenerate(small));
+    EXPECT_FALSE(hw3d::is_degenerate(translated));
+}
+
 }

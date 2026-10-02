@@ -80,6 +80,8 @@ target_sources(
     PRIVATE
         src/configuration/configuration.cpp
         src/geometry/geometry.cpp
+        src/geometry/expansion.cpp
+        src/geometry/robust_predicates.cpp
         src/window_context/window_context.cpp
         src/shader_program/shader_program.cpp
         src/renderer/renderer.cpp
@@ -99,6 +101,20 @@ target_sources(
 
 target_include_directories(hw3d_modules
     PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        src/geometry/expansion.cpp
+        src/geometry/robust_predicates.cpp
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        src/geometry/expansion.cpp
+        src/geometry/robust_predicates.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:strict"
+    )
+endif()
 
 target_link_libraries(
     hw3d_modules
@@ -168,6 +184,10 @@ if(BUILD_TESTING)
     add_hw3d_test(
         geometry_tests
         tests/geometry_tests.cpp
+    )
+    add_hw3d_test(
+        robust_geometry_tests
+        tests/robust_geometry_tests.cpp
     )
     add_hw3d_test(
         cpu_intersections_tests

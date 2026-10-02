@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <initializer_list>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 import hw3d.configuration;
@@ -28,6 +31,36 @@ Triangle point(const Vec3 value) noexcept
 Triangle segment(const Vec3 first, const Vec3 second) noexcept
 {
     return {first, second, first};
+}
+
+Triangle translated(
+    const Triangle& value,
+    const Vec3 offset) noexcept
+{
+    const auto translate = [&](const Vec3 point) noexcept {
+        return Vec3{
+            point.x + offset.x,
+            point.y + offset.y,
+            point.z + offset.z,
+        };
+    };
+    return {
+        translate(value.a),
+        translate(value.b),
+        translate(value.c),
+    };
+}
+
+Triangle scaled(const Triangle& value, const float factor) noexcept
+{
+    const auto scale = [&](const Vec3 point) noexcept {
+        return Vec3{
+            point.x * factor,
+            point.y * factor,
+            point.z * factor,
+        };
+    };
+    return {scale(value.a), scale(value.b), scale(value.c)};
 }
 
 void expect_collisions(
@@ -351,6 +384,128 @@ TEST(CpuIntersections, DistinguishesOverlappingAndDisjointCollinearSegments)
     expect_collisions(
         {first, overlapping, disjoint},
         {true, true, false});
+}
+
+TEST(CpuIntersections, PreservesSeparationAfterLargeTranslation)
+{
+    const Triangle outside = triangle(
+        {1.25F, 1.25F, 0.0F},
+        {3.0F, 1.25F, 0.0F},
+        {1.25F, 3.0F, 0.0F});
+    constexpr Vec3 offset{1'000'000.0F, -1'000'000.0F, 500'000.0F};
+
+    expect_collisions(
+        {translated(base_triangle, offset), translated(outside, offset)},
+        {false, false});
+}
+
+TEST(CpuIntersections, PreservesIntersectionAfterLargeTranslation)
+{
+    const Triangle vertical = triangle(
+        {0.5F, 0.5F, -1.0F},
+        {0.5F, 0.5F, 1.0F},
+        {0.5F, 1.5F, 0.0F});
+    constexpr Vec3 offset{1'000'000.0F, -1'000'000.0F, 500'000.0F};
+
+    expect_collisions(
+        {translated(base_triangle, offset), translated(vertical, offset)},
+        {true, true});
+}
+
+TEST(CpuIntersections, DoesNotCollapseSmallSeparatedTrianglesToPoints)
+{
+    const Triangle outside = triangle(
+        {1.25F, 1.25F, 0.0F},
+        {3.0F, 1.25F, 0.0F},
+        {1.25F, 3.0F, 0.0F});
+
+    expect_collisions(
+        {scaled(base_triangle, 1.0e-9F), scaled(outside, 1.0e-9F)},
+        {false, false});
+}
+
+TEST(CpuIntersections, DetectsSmallNonDegenerateIntersection)
+{
+    const Triangle vertical = triangle(
+        {0.5F, 0.5F, -1.0F},
+        {0.5F, 0.5F, 1.0F},
+        {0.5F, 1.5F, 0.0F});
+
+    expect_collisions(
+        {scaled(base_triangle, 1.0e-9F), scaled(vertical, 1.0e-9F)},
+        {true, true});
+}
+
+TEST(CpuIntersections, ClassificationDoesNotDependOnOtherTriangleScale)
+{
+    const Triangle large_outside = triangle(
+        {1.25F, 1.25F, 0.0F},
+        {1'000'000.0F, 1.25F, 0.0F},
+        {1.25F, 1'000'000.0F, 0.0F});
+
+    expect_collisions({base_triangle, large_outside}, {false, false});
+}
+
+TEST(CpuIntersections, DegenerateSegmentsAreTranslationAndScaleInvariant)
+{
+    const Triangle horizontal = segment(
+        {-1.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F});
+    const Triangle vertical = segment(
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F});
+    constexpr Vec3 offset{1'000'000.0F, 500'000.0F, -250'000.0F};
+
+    expect_collisions(
+        {
+            translated(scaled(horizontal, 0.25F), offset),
+            translated(scaled(vertical, 0.25F), offset),
+        },
+        {true, true});
+}
+
+TEST(CpuIntersections, RejectsNanAndInfinityBeforeBroadPhase)
+{
+    Triangle nan_triangle = base_triangle;
+    nan_triangle.a.x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(
+        [[maybe_unused]] const auto result =
+            hw3d::cpu_collisions({nan_triangle}),
+        std::invalid_argument);
+
+    Triangle infinite_triangle = base_triangle;
+    infinite_triangle.c.z = std::numeric_limits<float>::infinity();
+    EXPECT_THROW(
+        [[maybe_unused]] const auto result =
+            hw3d::cpu_collisions({base_triangle, infinite_triangle}),
+        std::invalid_argument);
+}
+
+TEST(CpuIntersections, FixedRandomizedSetIsMetamorphic)
+{
+    std::uint32_t state = 0xc001d00dU;
+    const auto next_coordinate = [&]() {
+        state = state * 1'664'525U + 1'013'904'223U;
+        return static_cast<float>(static_cast<int>(state % 33U) - 16);
+    };
+
+    std::vector<Triangle> original;
+    original.reserve(40);
+    for (int index = 0; index < 40; ++index) {
+        original.push_back(triangle(
+            {next_coordinate(), next_coordinate(), next_coordinate()},
+            {next_coordinate(), next_coordinate(), next_coordinate()},
+            {next_coordinate(), next_coordinate(), next_coordinate()}));
+    }
+    const std::vector<bool> expected = hw3d::cpu_collisions(original);
+
+    std::vector<Triangle> transformed;
+    transformed.reserve(original.size());
+    for (const Triangle& value : original) {
+        const Triangle permuted{value.b, value.c, value.a};
+        transformed.push_back(scaled(permuted, 0x1p-10F));
+    }
+    EXPECT_EQ(hw3d::cpu_collisions(transformed), expected);
 }
 
 }

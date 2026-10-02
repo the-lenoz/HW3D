@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <exception>
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -7,6 +8,7 @@
 #include <vector>
 
 import hw3d.configuration;
+import hw3d.geometry;
 import hw3d.window_context;
 import hw3d.renderer;
 import hw3d.cpu_intersections;
@@ -66,7 +68,16 @@ int main(const int argc, char** argv)
         const Options options = parse_options(argc, argv);
         const auto configuration = hw3d::read_configuration(std::cin);
 
-        if (options.headless && !options.use_gpu_intersections) {
+        bool use_gpu_intersections = options.use_gpu_intersections;
+        if (use_gpu_intersections
+            && std::ranges::any_of(
+                configuration.triangles, hw3d::is_degenerate)) {
+            std::cerr << "warning: GPU intersections require non-degenerate "
+                         "triangles; falling back to CPU\n";
+            use_gpu_intersections = false;
+        }
+
+        if (options.headless && !use_gpu_intersections) {
             print_collisions(
                 hw3d::cpu_collisions(configuration.triangles));
             return 0;
@@ -78,7 +89,7 @@ int main(const int argc, char** argv)
             options.headless ? "HW3D headless" : "HW3D",
             options.headless};
 
-        const std::vector<bool> highlighted = options.use_gpu_intersections
+        const std::vector<bool> highlighted = use_gpu_intersections
             ? hw3d::gpu_collisions(configuration.triangles)
             : hw3d::cpu_collisions(configuration.triangles);
 

@@ -110,6 +110,19 @@ TEST_F(GpuIntersectionsTest, DetectsIdenticalTriangles)
     expect_collisions({base_triangle, base_triangle}, {true, true});
 }
 
+TEST_F(GpuIntersectionsTest, DetectsIdenticalSmallTriangles)
+{
+    const auto scale = [](const Triangle& value, const float factor) {
+        return triangle(
+            {value.a.x * factor, value.a.y * factor, value.a.z * factor},
+            {value.b.x * factor, value.b.y * factor, value.b.z * factor},
+            {value.c.x * factor, value.c.y * factor, value.c.z * factor});
+    };
+
+    const Triangle small = scale(base_triangle, 0.01F);
+    expect_collisions({small, small}, {true, true});
+}
+
 TEST_F(GpuIntersectionsTest, DetectsCoplanarContainment)
 {
     const Triangle inner = triangle(
@@ -277,13 +290,6 @@ TEST_F(GpuIntersectionsTest, DispatchesMoreThanOneWorkGroup)
         EXPECT_FALSE(result[index]) << "triangle index: " << index;
     }
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
-}
-
-TEST_F(GpuIntersectionsTest, CurrentlyIgnoresDegenerateTriangles)
-{
-    const Triangle inside = point({0.5F, 0.5F, 0.0F});
-
-    expect_collisions({base_triangle, inside}, {false, false});
 }
 
 }
