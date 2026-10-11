@@ -44,7 +44,7 @@ public:
     friend Expansion operator*(const Expansion&, const Expansion&);
 
 private:
-    explicit Expansion(std::vector<double> components);
+    explicit Expansion(const std::vector<double>& components);
 
     std::vector<double> components_;
 };

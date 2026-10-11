@@ -1,7 +1,6 @@
 module;
 
 #include <cmath>
-#include <utility>
 #include <vector>
 
 module hw3d.geometry;
@@ -116,7 +115,7 @@ Expansion::Expansion(const float exact_value)
     }
 }
 
-Expansion::Expansion(std::vector<double> components)
+Expansion::Expansion(const std::vector<double>& components)
     : components_(compress(components))
 {
 }
@@ -153,16 +152,16 @@ Expansion operator-(const Expansion& left, const Expansion& right)
             ? 0.0 : left.components_.front();
         const double right_value = right.components_.empty()
             ? 0.0 : right.components_.front();
-        const TwoTerm difference = two_diff(left_value, right_value);
+        const auto [low, high] = two_diff(left_value, right_value);
         std::vector<double> result;
         result.reserve(2);
-        if (difference.low != 0.0) {
-            result.push_back(difference.low);
+        if (low != 0.0) {
+            result.push_back(low);
         }
-        if (difference.high != 0.0) {
-            result.push_back(difference.high);
+        if (high != 0.0) {
+            result.push_back(high);
         }
-        return Expansion(std::move(result));
+        return Expansion(result);
     }
     return left + (-right);
 }
@@ -174,7 +173,7 @@ Expansion operator-(const Expansion& value)
     for (const double component : value.components_) {
         result.push_back(-component);
     }
-    return Expansion(std::move(result));
+    return Expansion(result);
 }
 
 Expansion operator*(const Expansion& left, const Expansion& right)
@@ -186,7 +185,7 @@ Expansion operator*(const Expansion& left, const Expansion& right)
             result,
             scale_expansion_zeroelim(left.components_, component));
     }
-    return Expansion(std::move(result));
+    return Expansion(result);
 }
 
 }
