@@ -59,10 +59,13 @@ std::array<std::uint8_t, 3> center_pixel()
 }
 
 std::array<std::uint8_t, 3> rendered_center_pixel(
-    const std::vector<hw3d::Triangle>& triangles,
+    std::vector<hw3d::Triangle> triangles,
     const bool highlighted)
 {
-    hw3d::Renderer renderer{triangles, {highlighted}};
+    for (hw3d::Triangle& triangle : triangles) {
+        triangle.highlighted = highlighted;
+    }
+    hw3d::Renderer renderer{triangles};
     renderer.render();
     glFinish();
     return center_pixel();
@@ -95,23 +98,20 @@ protected:
 TEST_F(RendererTest, RejectsEmptyTriangleArray)
 {
     EXPECT_THROW(
-        hw3d::Renderer({}, {}),
+        hw3d::Renderer({}),
         std::invalid_argument);
 }
 
-TEST_F(RendererTest, RejectsMismatchedHighlightArray)
+TEST_F(RendererTest, ReadsHighlightFromTriangle)
 {
-    EXPECT_THROW(
-        hw3d::Renderer(centered_triangle, {}),
-        std::invalid_argument);
-    EXPECT_THROW(
-        hw3d::Renderer(centered_triangle, {false, true}),
-        std::invalid_argument);
+    auto triangles = centered_triangle;
+    triangles.front().highlighted = true;
+    EXPECT_NO_THROW({ hw3d::Renderer renderer{triangles}; });
 }
 
 TEST_F(RendererTest, ConfiguresDepthTestAndRendersGrayTriangle)
 {
-    hw3d::Renderer renderer{centered_triangle, {false}};
+    hw3d::Renderer renderer{centered_triangle};
 
     renderer.render();
     glFinish();
@@ -130,7 +130,9 @@ TEST_F(RendererTest, ConfiguresDepthTestAndRendersGrayTriangle)
 
 TEST_F(RendererTest, RendersHighlightedTriangleRed)
 {
-    hw3d::Renderer renderer{centered_triangle, {true}};
+    auto triangles = centered_triangle;
+    triangles.front().highlighted = true;
+    hw3d::Renderer renderer{triangles};
 
     renderer.render();
     glFinish();
@@ -160,7 +162,7 @@ TEST_F(RendererTest, UsesDimAmbientAndStrongerDirectionalDiffuse)
 
 TEST_F(RendererTest, MovementAndRotationMethodsRemainRenderable)
 {
-    hw3d::Renderer renderer{centered_triangle, {false}};
+    hw3d::Renderer renderer{centered_triangle};
 
     renderer.move_forward(0.1F);
     renderer.move_back(0.1F);
@@ -175,7 +177,7 @@ TEST_F(RendererTest, MovementAndRotationMethodsRemainRenderable)
 
 TEST_F(RendererTest, RenderSkipsZeroSizedViewport)
 {
-    hw3d::Renderer renderer{centered_triangle, {false}};
+    hw3d::Renderer renderer{centered_triangle};
     glViewport(0, 0, 0, 0);
 
     renderer.render();

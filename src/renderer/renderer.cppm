@@ -1,7 +1,7 @@
 module;
 
 #include <memory>
-#include <vector>
+#include <span>
 
 export module hw3d.renderer;
 
@@ -11,9 +11,7 @@ export namespace hw3d {
 
 class Renderer final {
 public:
-    Renderer(
-        const std::vector<Triangle>& triangles,
-        const std::vector<bool>& highlighted);
+    explicit Renderer(std::span<const Triangle> triangles);
     ~Renderer();
 
     Renderer(const Renderer&) = delete;

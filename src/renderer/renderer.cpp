@@ -10,6 +10,7 @@ module;
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -149,8 +150,7 @@ Vec3 triangle_normal(const Triangle& triangle) noexcept
 }
 
 std::vector<float> render_vertices(
-    const std::vector<Triangle>& triangles,
-    const std::vector<bool>& highlighted)
+    std::span<const Triangle> triangles)
 {
     constexpr std::array<std::array<float, 3>, 3> barycentrics{{
         {1.0F, 0.0F, 0.0F},
@@ -161,16 +161,13 @@ std::vector<float> render_vertices(
     std::vector<float> vertices;
     vertices.reserve(triangles.size() * 3 * 10);
 
-    for (std::size_t triangle_index = 0;
-         triangle_index < triangles.size();
-         ++triangle_index) {
-        const Triangle& triangle = triangles[triangle_index];
-        const std::array<Vec3, 3> positions{
-            triangle.a,
-            triangle.b,
-            triangle.c,
+    for (const auto &t : triangles) {
+        const std::array positions{
+            t.a,
+            t.b,
+            t.c,
         };
-        const Vec3 normal = triangle_normal(triangle);
+        const Vec3 normal = triangle_normal(t);
 
         for (std::size_t vertex_index = 0; vertex_index < 3; ++vertex_index) {
             const Vec3 vertex = positions[vertex_index];
@@ -182,7 +179,7 @@ std::vector<float> render_vertices(
                 vertices.end(),
                 barycentric.begin(),
                 barycentric.end());
-            vertices.push_back(highlighted[triangle_index] ? 1.0F : 0.0F);
+            vertices.push_back(t.highlighted ? 1.0F : 0.0F);
             vertices.push_back(normal.x);
             vertices.push_back(normal.y);
             vertices.push_back(normal.z);
@@ -204,7 +201,7 @@ struct ClipPlanes {
     float far_plane;
 };
 
-SceneBounds scene_bounds(const std::vector<Triangle>& triangles) noexcept
+SceneBounds scene_bounds(std::span<const Triangle> triangles) noexcept
 {
     Vec3 minimum{
         std::numeric_limits<float>::max(),
@@ -281,22 +278,14 @@ ClipPlanes clip_planes(
 
 class Renderer::Impl final {
 public:
-    Impl(
-        const std::vector<Triangle>& triangles,
-        const std::vector<bool>& highlighted)
+    explicit Impl(
+        std::span<const Triangle> triangles)
     {
         if (triangles.empty()) {
             throw std::invalid_argument(
                 "renderer requires at least one triangle");
         }
-        if (triangles.size() != highlighted.size()) {
-            throw std::invalid_argument(
-                "triangle and highlight arrays must have equal sizes");
-        }
-
-        const std::vector<float> vertices = render_vertices(
-            triangles,
-            highlighted);
+        const std::vector<float> vertices = render_vertices(triangles);
         vertex_count_ = static_cast<GLsizei>(vertices.size() / 10);
 
         const SceneBounds bounds = scene_bounds(triangles);
@@ -468,10 +457,8 @@ private:
     float pitch_radians_{};
 };
 
-Renderer::Renderer(
-    const std::vector<Triangle>& triangles,
-    const std::vector<bool>& highlighted)
-    : impl_(std::make_unique<Impl>(triangles, highlighted))
+Renderer::Renderer(std::span<const Triangle> triangles)
+    : impl_(std::make_unique<Impl>(triangles))
 {
 }
 

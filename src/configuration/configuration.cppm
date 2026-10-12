@@ -17,6 +17,7 @@ struct Triangle {
     Vec3 a;
     Vec3 b;
     Vec3 c;
+    bool highlighted = false;
 };
 
 struct Configuration {

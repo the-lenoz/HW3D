@@ -8,7 +8,6 @@ import hw3d.configuration;
 
 export namespace hw3d {
 
-[[nodiscard]] std::vector<bool> cpu_collisions(
-    const std::vector<Triangle>& triangles);
+void cpu_collisions(std::vector<Triangle>& triangles);
 
 }

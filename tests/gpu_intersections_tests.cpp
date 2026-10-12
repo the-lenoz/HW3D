@@ -59,15 +59,14 @@ protected:
     }
 
     void expect_collisions(
-        const std::vector<Triangle>& triangles,
+        std::vector<Triangle> triangles,
         const std::initializer_list<bool> expected)
     {
-        const std::vector<bool> actual = hw3d::gpu_collisions(triangles);
-
-        ASSERT_EQ(actual.size(), expected.size());
+        hw3d::gpu_collisions(triangles);
+        ASSERT_EQ(triangles.size(), expected.size());
         std::size_t index = 0;
         for (const bool value : expected) {
-            EXPECT_EQ(actual[index], value)
+            EXPECT_EQ(triangles[index].highlighted, value)
                 << "triangle index: " << index;
             ++index;
         }
@@ -103,6 +102,23 @@ TEST_F(GpuIntersectionsTest, ReturnsEmptyResultForEmptyInput)
 TEST_F(GpuIntersectionsTest, SingleTriangleDoesNotCollide)
 {
     expect_collisions({base_triangle}, {false});
+}
+
+TEST_F(GpuIntersectionsTest, ClearsPreviousHighlights)
+{
+    const Triangle far = triangle(
+        {10.0F, 10.0F, 10.0F},
+        {11.0F, 10.0F, 10.0F},
+        {10.0F, 11.0F, 10.0F});
+    std::vector<Triangle> triangles{base_triangle, far};
+    triangles[0].highlighted = true;
+    triangles[1].highlighted = true;
+
+    hw3d::gpu_collisions(triangles);
+
+    EXPECT_FALSE(triangles[0].highlighted);
+    EXPECT_FALSE(triangles[1].highlighted);
+    EXPECT_EQ(glGetError(), GL_NO_ERROR);
 }
 
 TEST_F(GpuIntersectionsTest, DetectsIdenticalTriangles)
@@ -283,11 +299,10 @@ TEST_F(GpuIntersectionsTest, DispatchesMoreThanOneWorkGroup)
             {x, 1.0F, 0.0F}));
     }
 
-    const std::vector<bool> result = hw3d::gpu_collisions(triangles);
+    hw3d::gpu_collisions(triangles);
 
-    ASSERT_EQ(result.size(), triangle_count);
-    for (std::size_t index = 0; index < result.size(); ++index) {
-        EXPECT_FALSE(result[index]) << "triangle index: " << index;
+    for (std::size_t index = 0; index < triangles.size(); ++index) {
+        EXPECT_FALSE(triangles[index].highlighted) << "triangle index: " << index;
     }
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
 }

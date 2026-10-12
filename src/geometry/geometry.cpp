@@ -7,6 +7,7 @@ module;
 #include <limits>
 #include <numeric>
 #include <vector>
+#include <span>
 
 module hw3d.geometry;
 
@@ -93,7 +94,7 @@ bool aabbs_intersect(const Aabb& left, const Aabb& right) noexcept
         && left.maximum.z >= right.minimum.z;
 }
 
-VoxelGrid make_voxel_grid(const std::vector<Aabb>& bounds) noexcept
+VoxelGrid make_voxel_grid(std::span<const Aabb> bounds) noexcept
 {
     if (bounds.empty()) {
         return {{}, {1.0F, 1.0F, 1.0F}};

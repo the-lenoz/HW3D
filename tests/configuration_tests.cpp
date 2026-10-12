@@ -41,6 +41,7 @@ TEST(Configuration, ReadsOneTriangle)
     EXPECT_FLOAT_EQ(triangle.c.x, 7.0F);
     EXPECT_FLOAT_EQ(triangle.c.y, 8.0F);
     EXPECT_FLOAT_EQ(triangle.c.z, 9.75F);
+    EXPECT_FALSE(triangle.highlighted);
 }
 
 TEST(Configuration, AcceptsArbitraryWhitespaceAndMultipleTriangles)

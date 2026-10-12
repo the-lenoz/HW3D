@@ -2,6 +2,7 @@ module;
 
 #include <cmath>
 #include <vector>
+#include <span>
 
 module hw3d.geometry;
 
@@ -40,7 +41,7 @@ TwoTerm two_product(const double a, const double b) noexcept
 }
 
 std::vector<double> grow_expansion_zeroelim(
-    const std::vector<double>& expansion,
+    std::span<double> expansion,
     const double value)
 {
     std::vector<double> result;
@@ -60,7 +61,7 @@ std::vector<double> grow_expansion_zeroelim(
     return result;
 }
 
-std::vector<double> compress(const std::vector<double>& components)
+std::vector<double> compress(std::span<const double> components)
 {
     std::vector<double> result;
     result.reserve(components.size());
@@ -73,10 +74,10 @@ std::vector<double> compress(const std::vector<double>& components)
 }
 
 std::vector<double> fast_expansion_sum_zeroelim(
-    const std::vector<double>& left,
-    const std::vector<double>& right)
+    std::span<const double> left,
+    std::span<const double> right)
 {
-    std::vector<double> result = left;
+    std::vector<double> result{left.begin(), left.end()};
     result.reserve(left.size() + right.size());
     for (const double component : right) {
         result = grow_expansion_zeroelim(result, component);
@@ -85,7 +86,7 @@ std::vector<double> fast_expansion_sum_zeroelim(
 }
 
 std::vector<double> scale_expansion_zeroelim(
-    const std::vector<double>& expansion,
+    std::span<const double> expansion,
     const double scale)
 {
     if (scale == 0.0 || expansion.empty()) {
@@ -115,7 +116,7 @@ Expansion::Expansion(const float exact_value)
     }
 }
 
-Expansion::Expansion(const std::vector<double>& components)
+Expansion::Expansion(std::span<const double> components)
     : components_(compress(components))
 {
 }
@@ -140,9 +141,7 @@ bool operator==(const Expansion& left, const Expansion& right)
 
 Expansion operator+(const Expansion& left, const Expansion& right)
 {
-    return Expansion(fast_expansion_sum_zeroelim(
-        left.components_,
-        right.components_));
+    return Expansion(fast_expansion_sum_zeroelim(left.components_,right.components_));
 }
 
 Expansion operator-(const Expansion& left, const Expansion& right)

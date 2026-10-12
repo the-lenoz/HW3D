@@ -2,6 +2,7 @@ module;
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 export module hw3d.geometry;
@@ -44,7 +45,7 @@ public:
     friend Expansion operator*(const Expansion&, const Expansion&);
 
 private:
-    explicit Expansion(const std::vector<double>& components);
+    explicit Expansion(std::span<const double> components);
 
     std::vector<double> components_;
 };
@@ -91,8 +92,7 @@ struct VoxelGrid {
     const Aabb& left,
     const Aabb& right) noexcept;
 
-[[nodiscard]] VoxelGrid make_voxel_grid(
-    const std::vector<Aabb>& bounds) noexcept;
+[[nodiscard]] VoxelGrid make_voxel_grid(std::span<const Aabb> bounds) noexcept;
 [[nodiscard]] Voxel voxel_for(
     const Vec3& point,
     const VoxelGrid& grid) noexcept;

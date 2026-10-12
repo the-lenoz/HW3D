@@ -64,15 +64,16 @@ Triangle scaled(const Triangle& value, const float factor) noexcept
 }
 
 void expect_collisions(
-    const std::vector<Triangle>& triangles,
+    std::vector<Triangle> triangles,
     const std::initializer_list<bool> expected)
 {
-    const std::vector<bool> actual = hw3d::cpu_collisions(triangles);
+    hw3d::cpu_collisions(triangles);
 
-    ASSERT_EQ(actual.size(), expected.size());
+    ASSERT_EQ(triangles.size(), expected.size());
     std::size_t index = 0;
     for (const bool value : expected) {
-        EXPECT_EQ(actual[index], value) << "triangle index: " << index;
+        EXPECT_EQ(triangles[index].highlighted, value)
+            << "triangle index: " << index;
         ++index;
     }
 }
@@ -90,6 +91,22 @@ TEST(CpuIntersections, ReturnsEmptyResultForEmptyInput)
 TEST(CpuIntersections, SingleTriangleDoesNotCollide)
 {
     expect_collisions({base_triangle}, {false});
+}
+
+TEST(CpuIntersections, ClearsPreviousHighlights)
+{
+    const Triangle far = triangle(
+        {10.0F, 10.0F, 10.0F},
+        {11.0F, 10.0F, 10.0F},
+        {10.0F, 11.0F, 10.0F});
+    std::vector<Triangle> triangles{base_triangle, far};
+    triangles[0].highlighted = true;
+    triangles[1].highlighted = true;
+
+    hw3d::cpu_collisions(triangles);
+
+    EXPECT_FALSE(triangles[0].highlighted);
+    EXPECT_FALSE(triangles[1].highlighted);
 }
 
 TEST(CpuIntersections, DetectsIdenticalTriangles)
@@ -468,16 +485,19 @@ TEST(CpuIntersections, RejectsNanAndInfinityBeforeBroadPhase)
 {
     Triangle nan_triangle = base_triangle;
     nan_triangle.a.x = std::numeric_limits<float>::quiet_NaN();
+    std::vector<Triangle> nan_triangles{nan_triangle};
     EXPECT_THROW(
-        [[maybe_unused]] const auto result =
-            hw3d::cpu_collisions({nan_triangle}),
+        hw3d::cpu_collisions(nan_triangles),
         std::invalid_argument);
 
     Triangle infinite_triangle = base_triangle;
     infinite_triangle.c.z = std::numeric_limits<float>::infinity();
+    std::vector<Triangle> infinite_triangles{
+        base_triangle,
+        infinite_triangle,
+    };
     EXPECT_THROW(
-        [[maybe_unused]] const auto result =
-            hw3d::cpu_collisions({base_triangle, infinite_triangle}),
+        hw3d::cpu_collisions(infinite_triangles),
         std::invalid_argument);
 }
 
@@ -497,7 +517,7 @@ TEST(CpuIntersections, FixedRandomizedSetIsMetamorphic)
             {next_coordinate(), next_coordinate(), next_coordinate()},
             {next_coordinate(), next_coordinate(), next_coordinate()}));
     }
-    const std::vector<bool> expected = hw3d::cpu_collisions(original);
+    hw3d::cpu_collisions(original);
 
     std::vector<Triangle> transformed;
     transformed.reserve(original.size());
@@ -505,7 +525,12 @@ TEST(CpuIntersections, FixedRandomizedSetIsMetamorphic)
         const Triangle permuted{value.b, value.c, value.a};
         transformed.push_back(scaled(permuted, 0x1p-10F));
     }
-    EXPECT_EQ(hw3d::cpu_collisions(transformed), expected);
+    hw3d::cpu_collisions(transformed);
+    ASSERT_EQ(transformed.size(), original.size());
+    for (std::size_t index = 0; index < transformed.size(); ++index) {
+        EXPECT_EQ(transformed[index].highlighted, original[index].highlighted)
+            << "triangle index: " << index;
+    }
 }
 
 }

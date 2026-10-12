@@ -18,10 +18,10 @@ constexpr std::int64_t max_triangle_count = 1'000'000;
 Triangle read_triangle(std::istream& input, const std::size_t index)
 {
     Triangle triangle{};
-
-    if (!(input >> triangle.a.x >> triangle.a.y >> triangle.a.z
-                >> triangle.b.x >> triangle.b.y >> triangle.b.z
-                >> triangle.c.x >> triangle.c.y >> triangle.c.z)) {
+    input >> triangle.a.x >> triangle.a.y >> triangle.a.z
+          >> triangle.b.x >> triangle.b.y >> triangle.b.z
+          >> triangle.c.x >> triangle.c.y >> triangle.c.z;
+    if (!input) {
         throw std::runtime_error(
             "failed to read triangle " + std::to_string(index));
     }
@@ -33,10 +33,9 @@ Triangle read_triangle(std::istream& input, const std::size_t index)
 
 Configuration read_configuration(std::istream& input)
 {
-    std::ios_base::sync_with_stdio(false);
-    std::cin.tie(nullptr);
     std::int64_t triangle_count{};
-    if (!(input >> triangle_count)) {
+    input >> triangle_count;
+    if (!input) {
         throw std::runtime_error("failed to read triangle count");
     }
 
@@ -53,10 +52,6 @@ Configuration read_configuration(std::istream& input)
         configuration.triangles.push_back(
             read_triangle(input, static_cast<std::size_t>(index + 1)));
     }
-
-    std::ios_base::sync_with_stdio(true);
-    std::cin.tie(&std::cout);
-
     return configuration;
 }
 
