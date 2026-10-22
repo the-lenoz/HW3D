@@ -1,9 +1,7 @@
 #version 460 core
 #extension GL_ARB_shader_group_vote : require
 
-#define MAX_SIZE 1000000
 #define N_STEPS 22
-
 #define SAT_AXIS_COUNT 17
 
 layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
@@ -13,9 +11,13 @@ struct Triangle
     vec3 a;
     vec3 b;
     vec3 c;
-    ivec4 voxel;
     vec3 min_bound;
     vec3 max_bound;
+};
+
+struct StaticEntry
+{
+    ivec4 voxel;
 };
 
 layout(std430, binding=0) readonly buffer TriangleBuffer {
@@ -25,6 +27,17 @@ layout(std430, binding=0) readonly buffer TriangleBuffer {
 layout(std430, binding=1) buffer HighlightBuffer {
     int highlighted[];
 };
+
+layout(std430, binding=2) readonly buffer PairBuffer {
+    uvec2 pairs[];
+};
+
+layout(std430, binding=3) readonly buffer StaticEntryBuffer {
+    StaticEntry static_entries[];
+};
+
+uniform int pair_mode;
+uniform uint pair_offset;
 
 bool isLess(ivec3 a, ivec3 b)
 {
@@ -44,17 +57,22 @@ int findFirstBinarySearch(ivec3 target, int arr_size)
         int mid = left + step;
         int safe_mid = min(mid, arr_size - 1);
 
-        bool is_smaller = isLess(triangles[safe_mid].voxel.xyz, target);
+        bool is_smaller = isLess(static_entries[safe_mid].voxel.xyz, target);
 
         left = is_smaller ? (safe_mid + 1) : left;
         count = is_smaller ? (count - step - 1) : step;
     }
 
-    bool found = (left < arr_size) && (triangles[left].voxel.xyz == target);
+    bool found = (left < arr_size)
+        && (static_entries[left].voxel.xyz == target);
     return found ? left : -1;
 }
 
-bool boundsIntersect(vec3 min_bound_a, vec3 max_bound_a, vec3 min_bound_b, vec3 max_bound_b)
+bool boundsIntersect(
+    vec3 min_bound_a,
+    vec3 max_bound_a,
+    vec3 min_bound_b,
+    vec3 max_bound_b)
 {
     return min_bound_a.x <= max_bound_b.x && min_bound_b.x <= max_bound_a.x &&
            min_bound_a.y <= max_bound_b.y && min_bound_b.y <= max_bound_a.y &&
@@ -121,12 +139,37 @@ bool triangleIntersect(Triangle a, Triangle b)
     return result;
 }
 
-void main()
+void testPair(uint first_id, uint second_id)
+{
+    Triangle first = triangles[first_id];
+    Triangle second = triangles[second_id];
+    if (boundsIntersect(
+            first.min_bound,
+            first.max_bound,
+            second.min_bound,
+            second.max_bound)
+        && triangleIntersect(first, second)) {
+        atomicOr(highlighted[first_id], 1);
+        atomicOr(highlighted[second_id], 1);
+    }
+}
+
+void runPairMode()
+{
+    uint pair_index = pair_offset + gl_GlobalInvocationID.x;
+    if (pair_index >= uint(pairs.length())) return;
+
+    uvec2 candidate = pairs[pair_index];
+    testPair(candidate.x, candidate.y);
+}
+
+void runVoxelFallback()
 {
     uint index = gl_GlobalInvocationID.x;
-    if (index >= triangles.length()) return;
+    if (index >= uint(static_entries.length())) return;
 
-    Triangle t = triangles[index];
+    StaticEntry entry = static_entries[index];
+    uint triangle_id = uint(entry.voxel.w);
 
     for (int dX = -1; dX <= 1; ++dX)
     {
@@ -134,30 +177,25 @@ void main()
         {
             for (int dZ = -1; dZ <= 1; ++dZ)
             {
-                ivec3 check_voxel = ivec3(t.voxel.x + dX, t.voxel.y + dY, t.voxel.z + dZ);
+                ivec3 check_voxel = entry.voxel.xyz + ivec3(dX, dY, dZ);
+                int found_entry = findFirstBinarySearch(
+                    check_voxel,
+                    static_entries.length());
 
-                int found_triangle = findFirstBinarySearch(check_voxel, triangles.length());
-
-                bool keep_scanning = found_triangle != -1;
-                int current_idx = found_triangle;
-
+                bool keep_scanning = found_entry != -1;
+                int current_idx = found_entry;
                 while (anyInvocationARB(keep_scanning))
                 {
                     if (keep_scanning)
                     {
-                        Triangle check_t = triangles[current_idx];
-                        if (check_t.voxel.xyz == check_voxel)
+                        StaticEntry candidate = static_entries[current_idx];
+                        if (candidate.voxel.xyz == check_voxel)
                         {
                             if (current_idx > int(index))
                             {
-                                int h = int(
-                                boundsIntersect(t.min_bound, t.max_bound,
-                                                check_t.min_bound, check_t.max_bound) &&
-                                triangleIntersect(t, check_t)
-                                );
-
-                                atomicOr(highlighted[t.voxel.w], h);
-                                atomicOr(highlighted[check_t.voxel.w], h);
+                                testPair(
+                                    triangle_id,
+                                    uint(candidate.voxel.w));
                             }
                         }
                         else
@@ -165,7 +203,7 @@ void main()
                             keep_scanning = false;
                         }
 
-                        if (current_idx >= triangles.length() - 1)
+                        if (current_idx >= static_entries.length() - 1)
                         {
                             keep_scanning = false;
                         }
@@ -174,5 +212,14 @@ void main()
                 }
             }
         }
+    }
+}
+
+void main()
+{
+    if (pair_mode != 0) {
+        runPairMode();
+    } else {
+        runVoxelFallback();
     }
 }

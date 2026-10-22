@@ -20,6 +20,20 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
+    },
+    {
+      "name": "profiling",
+      "displayName": "Profiling (Ninja)",
+      "description": "Release-speed build with debug symbols and reliable frame-pointer call stacks",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/profiling",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O3 -g -DNDEBUG -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O3 -g -DNDEBUG -fno-omit-frame-pointer",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -30,6 +44,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "profiling",
+      "configurePreset": "profiling"
     }
   ],
   "testPresets": [

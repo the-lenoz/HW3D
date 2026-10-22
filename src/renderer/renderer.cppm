@@ -5,13 +5,15 @@ module;
 
 export module hw3d.renderer;
 
-import hw3d.configuration;
+import hw3d.geometry;
 
 export namespace hw3d {
 
 class Renderer final {
 public:
-    explicit Renderer(std::span<const Triangle> triangles);
+    Renderer(
+        std::span<const Triangle> triangles,
+        std::span<const Aabb> motion_bounds);
     ~Renderer();
 
     Renderer(const Renderer&) = delete;
@@ -19,7 +21,7 @@ public:
     Renderer(Renderer&&) = delete;
     Renderer& operator=(Renderer&&) = delete;
 
-    void render() noexcept;
+    void render();
     void move_forward(float delta_seconds) noexcept;
     void move_back(float delta_seconds) noexcept;
     void move_left(float delta_seconds) noexcept;

@@ -4,7 +4,9 @@
 #include <GLFW/glfw3.h>
 
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
+#include <string>
 
 import hw3d.window_context;
 
@@ -107,6 +109,44 @@ TEST(WindowContext, RunProvidesOneFrameInput)
     });
 
     EXPECT_EQ(calls, 1);
+}
+
+TEST(WindowContext, UpdatesPerformanceTitleUsingMeasuredInterval)
+{
+    hw3d::WindowContext window{64, 64, "custom title"};
+    int calls = 0;
+    glfwSetTime(0.0);
+
+    window.run([&](const hw3d::FrameInput&) {
+        ++calls;
+        if (calls == 1) {
+            glfwSetTime(2.0);
+            return;
+        }
+
+#if GLFW_VERSION_MAJOR > 3 \
+    || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
+        const char* const raw_title = glfwGetWindowTitle(
+            glfwGetCurrentContext());
+        ASSERT_NE(raw_title, nullptr);
+        const std::string title{raw_title};
+        EXPECT_EQ(title.rfind("custom title | FPS: ", 0), 0U);
+
+        double fps{};
+        double milliseconds_per_frame{};
+        ASSERT_EQ(
+            std::sscanf(
+                title.c_str(),
+                "custom title | FPS: %lf (%lf ms/frame)",
+                &fps,
+                &milliseconds_per_frame),
+            2);
+        EXPECT_NEAR(fps * milliseconds_per_frame, 1000.0, 1.0);
+#endif
+        window.request_close();
+    });
+
+    EXPECT_EQ(calls, 2);
 }
 
 TEST(WindowContext, AcceptsEmptyFrameCallback)

@@ -15,6 +15,8 @@ module;
 #include <vector>
 
 module hw3d.renderer;
+import hw3d.configuration;
+import hw3d.geometry;
 import hw3d.shader_program;
 
 namespace hw3d {
@@ -149,45 +151,13 @@ Vec3 triangle_normal(const Triangle& triangle) noexcept
     return scale(normal, 1.0F / normal_length);
 }
 
-std::vector<float> render_vertices(
-    std::span<const Triangle> triangles)
-{
-    constexpr std::array<std::array<float, 3>, 3> barycentrics{{
-        {1.0F, 0.0F, 0.0F},
-        {0.0F, 1.0F, 0.0F},
-        {0.0F, 0.0F, 1.0F},
-    }};
-
-    std::vector<float> vertices;
-    vertices.reserve(triangles.size() * 3 * 10);
-
-    for (const auto &t : triangles) {
-        const std::array positions{
-            t.a,
-            t.b,
-            t.c,
-        };
-        const Vec3 normal = triangle_normal(t);
-
-        for (std::size_t vertex_index = 0; vertex_index < 3; ++vertex_index) {
-            const Vec3 vertex = positions[vertex_index];
-            const auto& barycentric = barycentrics[vertex_index];
-            vertices.push_back(vertex.x);
-            vertices.push_back(vertex.y);
-            vertices.push_back(vertex.z);
-            vertices.insert(
-                vertices.end(),
-                barycentric.begin(),
-                barycentric.end());
-            vertices.push_back(t.highlighted ? 1.0F : 0.0F);
-            vertices.push_back(normal.x);
-            vertices.push_back(normal.y);
-            vertices.push_back(normal.z);
-        }
-    }
-
-    return vertices;
-}
+struct alignas(16) GpuTriangle {
+    std::array<float, 4> a;
+    std::array<float, 4> b;
+    std::array<float, 4> c;
+    std::array<float, 4> normal;
+};
+static_assert(sizeof(GpuTriangle) == 64);
 
 struct SceneBounds {
     Vec3 camera_position;
@@ -201,7 +171,21 @@ struct ClipPlanes {
     float far_plane;
 };
 
-SceneBounds scene_bounds(std::span<const Triangle> triangles) noexcept
+bool valid_motion_bounds(const Aabb& bounds) noexcept
+{
+    const auto finite = [](const Vec3& point) noexcept {
+        return std::isfinite(point.x)
+            && std::isfinite(point.y)
+            && std::isfinite(point.z);
+    };
+    return finite(bounds.minimum)
+        && finite(bounds.maximum)
+        && bounds.minimum.x <= bounds.maximum.x
+        && bounds.minimum.y <= bounds.maximum.y
+        && bounds.minimum.z <= bounds.maximum.z;
+}
+
+SceneBounds scene_bounds(const std::span<const Aabb> motion_bounds) noexcept
 {
     Vec3 minimum{
         std::numeric_limits<float>::max(),
@@ -212,15 +196,13 @@ SceneBounds scene_bounds(std::span<const Triangle> triangles) noexcept
         std::numeric_limits<float>::lowest(),
         std::numeric_limits<float>::lowest()};
 
-    for (const Triangle& triangle : triangles) {
-        for (const Vec3 vertex : {triangle.a, triangle.b, triangle.c}) {
-            minimum.x = std::min(minimum.x, vertex.x);
-            minimum.y = std::min(minimum.y, vertex.y);
-            minimum.z = std::min(minimum.z, vertex.z);
-            maximum.x = std::max(maximum.x, vertex.x);
-            maximum.y = std::max(maximum.y, vertex.y);
-            maximum.z = std::max(maximum.z, vertex.z);
-        }
+    for (const Aabb& bounds : motion_bounds) {
+        minimum.x = std::min(minimum.x, bounds.minimum.x);
+        minimum.y = std::min(minimum.y, bounds.minimum.y);
+        minimum.z = std::min(minimum.z, bounds.minimum.z);
+        maximum.x = std::max(maximum.x, bounds.maximum.x);
+        maximum.y = std::max(maximum.y, bounds.maximum.y);
+        maximum.z = std::max(maximum.z, bounds.maximum.z);
     }
 
     const Vec3 center{
@@ -278,17 +260,27 @@ ClipPlanes clip_planes(
 
 class Renderer::Impl final {
 public:
-    explicit Impl(
-        std::span<const Triangle> triangles)
+    Impl(
+        const std::span<const Triangle> triangles,
+        const std::span<const Aabb> motion_bounds)
+        : triangles_(triangles)
     {
         if (triangles.empty()) {
             throw std::invalid_argument(
                 "renderer requires at least one triangle");
         }
-        const std::vector<float> vertices = render_vertices(triangles);
-        vertex_count_ = static_cast<GLsizei>(vertices.size() / 10);
+        if (motion_bounds.size() != triangles_.size()) {
+            throw std::invalid_argument(
+                "triangle and motion bound counts must match");
+        }
+        if (!std::ranges::all_of(
+                motion_bounds, valid_motion_bounds)) {
+            throw std::invalid_argument(
+                "motion bounds must be finite and ordered");
+        }
+        vertex_count_ = static_cast<GLsizei>(triangles_.size() * 3);
 
-        const SceneBounds bounds = scene_bounds(triangles);
+        const SceneBounds bounds = scene_bounds(motion_bounds);
         camera_position_ = bounds.camera_position;
         scene_center_ = bounds.center;
         scene_radius_ = bounds.radius;
@@ -304,50 +296,12 @@ public:
         }
 
         glGenVertexArrays(1, &vertex_array_);
-        glGenBuffers(1, &vertex_buffer_);
-
-        glBindVertexArray(vertex_array_);
-        glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_);
-        glBufferData(
-            GL_ARRAY_BUFFER,
-            static_cast<GLsizeiptr>(vertices.size() * sizeof(float)),
-            vertices.data(),
-            GL_STATIC_DRAW);
-        glVertexAttribPointer(
-            0,
-            3,
-            GL_FLOAT,
-            GL_FALSE,
-            10 * sizeof(float),
-            nullptr);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(
-            1,
-            3,
-            GL_FLOAT,
-            GL_FALSE,
-            10 * sizeof(float),
-            reinterpret_cast<const void*>(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(
-            2,
-            1,
-            GL_FLOAT,
-            GL_FALSE,
-            10 * sizeof(float),
-            reinterpret_cast<const void*>(6 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(
-            3,
-            3,
-            GL_FLOAT,
-            GL_FALSE,
-            10 * sizeof(float),
-            reinterpret_cast<const void*>(7 * sizeof(float)));
-        glEnableVertexAttribArray(3);
-
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glBindVertexArray(0);
+        glCreateBuffers(1, &triangle_buffer_);
+        glNamedBufferData(
+            triangle_buffer_,
+            static_cast<GLsizeiptr>(triangles_.size() * sizeof(GpuTriangle)),
+            nullptr,
+            GL_STREAM_DRAW);
 
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
@@ -355,20 +309,22 @@ public:
 
     ~Impl()
     {
-        glDeleteBuffers(1, &vertex_buffer_);
+        glDeleteBuffers(1, &triangle_buffer_);
         glDeleteVertexArrays(1, &vertex_array_);
     }
 
-    void render() const noexcept
+    void render()
     {
-        glClearColor(0.04F, 0.05F, 0.08F, 1.0F);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
         GLint viewport[4]{};
         glGetIntegerv(GL_VIEWPORT, viewport);
         if (viewport[2] <= 0 || viewport[3] <= 0) {
             return;
         }
+
+        update_triangle_buffer();
+
+        glClearColor(0.04F, 0.05F, 0.08F, 1.0F);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const float aspect_ratio =
             static_cast<float>(viewport[2])
@@ -390,6 +346,10 @@ public:
             1,
             GL_FALSE,
             view_projection.data());
+        glBindBufferBase(
+            GL_SHADER_STORAGE_BUFFER,
+            0,
+            triangle_buffer_);
         glBindVertexArray(vertex_array_);
         glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
         glBindVertexArray(0);
@@ -433,6 +393,42 @@ public:
     }
 
 private:
+    void update_triangle_buffer()
+    {
+        auto* const mapped = static_cast<GpuTriangle*>(
+            glMapNamedBufferRange(
+                triangle_buffer_,
+                0,
+                static_cast<GLsizeiptr>(
+                    triangles_.size() * sizeof(GpuTriangle)),
+                GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT));
+        if (mapped == nullptr) {
+            throw std::runtime_error(
+                "failed to map renderer triangle buffer");
+        }
+
+        for (std::size_t index = 0; index < triangles_.size(); ++index) {
+            const Triangle& triangle = triangles_[index];
+            const Vec3 normal = triangle_normal(triangle);
+            mapped[index] = {
+                {
+                    triangle.a.x,
+                    triangle.a.y,
+                    triangle.a.z,
+                    triangle.highlighted ? 1.0F : 0.0F,
+                },
+                {triangle.b.x, triangle.b.y, triangle.b.z, 0.0F},
+                {triangle.c.x, triangle.c.y, triangle.c.z, 0.0F},
+                {normal.x, normal.y, normal.z, 0.0F},
+            };
+        }
+
+        if (glUnmapNamedBuffer(triangle_buffer_) != GL_TRUE) {
+            throw std::runtime_error(
+                "renderer triangle buffer contents became invalid");
+        }
+    }
+
     Vec3 direction() const noexcept
     {
         return camera_direction(yaw_radians_, pitch_radians_);
@@ -445,8 +441,9 @@ private:
     }
 
     std::optional<ShaderProgram> program_;
+    std::span<const Triangle> triangles_;
     GLuint vertex_array_{};
-    GLuint vertex_buffer_{};
+    GLuint triangle_buffer_{};
     GLint view_projection_location_{};
     GLsizei vertex_count_{};
     Vec3 camera_position_{};
@@ -457,14 +454,16 @@ private:
     float pitch_radians_{};
 };
 
-Renderer::Renderer(std::span<const Triangle> triangles)
-    : impl_(std::make_unique<Impl>(triangles))
+Renderer::Renderer(
+    const std::span<const Triangle> triangles,
+    const std::span<const Aabb> motion_bounds)
+    : impl_(std::make_unique<Impl>(triangles, motion_bounds))
 {
 }
 
 Renderer::~Renderer() = default;
 
-void Renderer::render() noexcept
+void Renderer::render()
 {
     impl_->render();
 }

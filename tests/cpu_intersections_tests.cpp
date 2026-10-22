@@ -1,13 +1,16 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <vector>
 
 import hw3d.configuration;
+import hw3d.geometry;
 import hw3d.cpu_intersections;
 
 namespace {
@@ -63,11 +66,24 @@ Triangle scaled(const Triangle& value, const float factor) noexcept
     return {scale(value.a), scale(value.b), scale(value.c)};
 }
 
+std::vector<hw3d::Aabb> static_motion_bounds(
+    const std::vector<Triangle>& triangles)
+{
+    std::vector<hw3d::Aabb> result;
+    result.reserve(triangles.size());
+    for (const Triangle& value : triangles) {
+        result.push_back(hw3d::aabb(value));
+    }
+    return result;
+}
+
 void expect_collisions(
     std::vector<Triangle> triangles,
     const std::initializer_list<bool> expected)
 {
-    hw3d::cpu_collisions(triangles);
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::CpuIntersectionDetector detector{triangles, bounds};
+    detector.update();
 
     ASSERT_EQ(triangles.size(), expected.size());
     std::size_t index = 0;
@@ -103,10 +119,178 @@ TEST(CpuIntersections, ClearsPreviousHighlights)
     triangles[0].highlighted = true;
     triangles[1].highlighted = true;
 
-    hw3d::cpu_collisions(triangles);
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::CpuIntersectionDetector detector{triangles, bounds};
+    detector.update();
 
     EXPECT_FALSE(triangles[0].highlighted);
     EXPECT_FALSE(triangles[1].highlighted);
+}
+
+TEST(CpuIntersections, ReusesStaticMotionPairsAcrossVertexUpdates)
+{
+    const Triangle far = translated(base_triangle, {50.0F, 0.0F, 0.0F});
+    std::vector<Triangle> triangles{base_triangle, far};
+    const std::vector<hw3d::Aabb> motion_bounds{
+        {{-1.0F, -1.0F, -1.0F}, {3.0F, 3.0F, 1.0F}},
+        {{-1.0F, -1.0F, -1.0F}, {53.0F, 3.0F, 1.0F}},
+    };
+    hw3d::CpuIntersectionDetector detector{triangles, motion_bounds};
+
+    detector.update();
+    EXPECT_FALSE(triangles[0].highlighted);
+    EXPECT_FALSE(triangles[1].highlighted);
+
+    triangles[1] = base_triangle;
+    detector.update();
+    EXPECT_TRUE(triangles[0].highlighted);
+    EXPECT_TRUE(triangles[1].highlighted);
+
+    triangles[1] = far;
+    detector.update();
+    EXPECT_FALSE(triangles[0].highlighted);
+    EXPECT_FALSE(triangles[1].highlighted);
+}
+
+TEST(CpuIntersections, PairCacheSurvivesRuntimeVectorReallocation)
+{
+    std::vector<Triangle> triangles{base_triangle, base_triangle};
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::CpuIntersectionDetector detector{triangles, bounds};
+
+    const Triangle* const old_data = triangles.data();
+    triangles.reserve(triangles.capacity() + 100);
+    ASSERT_NE(triangles.data(), old_data);
+
+    detector.update();
+    EXPECT_TRUE(triangles[0].highlighted);
+    EXPECT_TRUE(triangles[1].highlighted);
+}
+
+TEST(CpuIntersections, ReusesDensePairGraphWithoutStaleHighlights)
+{
+    constexpr std::size_t triangle_count = 5;
+    std::vector<Triangle> triangles(triangle_count, base_triangle);
+    const std::vector<hw3d::Aabb> motion_bounds(
+        triangle_count,
+        {{-100.0F, -100.0F, -1.0F}, {100.0F, 100.0F, 1.0F}});
+    hw3d::CpuIntersectionDetector detector{triangles, motion_bounds};
+
+    detector.update();
+    for (std::size_t index = 0; index < triangle_count; ++index) {
+        EXPECT_TRUE(triangles[index].highlighted)
+            << "triangle index: " << index;
+        triangles[index] = translated(
+            base_triangle,
+            {static_cast<float>(index) * 10.0F, 0.0F, 0.0F});
+    }
+
+    detector.update();
+    for (std::size_t index = 0; index < triangle_count; ++index) {
+        EXPECT_FALSE(triangles[index].highlighted)
+            << "triangle index: " << index;
+    }
+}
+
+TEST(CpuIntersections, VoxelFallbackUpdatesFlagsAndPreservesInputOrder)
+{
+    const Triangle far = translated(base_triangle, {50.0F, 0.0F, 0.0F});
+    const std::vector<hw3d::Aabb> motion_bounds{
+        {{-2.0F, -2.0F, -1.0F}, {55.0F, 5.0F, 1.0F}},
+        {{-2.0F, -2.0F, -1.0F}, {55.0F, 5.0F, 1.0F}},
+        {{48.0F, -2.0F, -1.0F}, {55.0F, 5.0F, 1.0F}},
+    };
+    for (const std::size_t budget : {std::size_t{0}, std::size_t{1}}) {
+        std::vector<Triangle> triangles{base_triangle, base_triangle, far};
+        hw3d::CpuIntersectionDetector detector{
+            triangles, motion_bounds, budget};
+
+        detector.update();
+        EXPECT_TRUE(triangles[0].highlighted) << "budget: " << budget;
+        EXPECT_TRUE(triangles[1].highlighted) << "budget: " << budget;
+        EXPECT_FALSE(triangles[2].highlighted) << "budget: " << budget;
+
+        triangles[1] = far;
+        detector.update();
+        EXPECT_FALSE(triangles[0].highlighted) << "budget: " << budget;
+        EXPECT_TRUE(triangles[1].highlighted) << "budget: " << budget;
+        EXPECT_TRUE(triangles[2].highlighted) << "budget: " << budget;
+    }
+}
+
+TEST(CpuIntersections, EmptyPairCacheStillValidatesCoordinatesAndClearsFlags)
+{
+    std::vector<Triangle> triangles{base_triangle};
+    triangles[0].highlighted = true;
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::CpuIntersectionDetector detector{triangles, bounds};
+
+    detector.update();
+    EXPECT_FALSE(triangles[0].highlighted);
+
+    triangles[0].a.x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(detector.update(), std::invalid_argument);
+}
+
+TEST(CpuIntersections, RejectsPairBudgetAboveSupportedMaximum)
+{
+    std::vector<Triangle> triangles{base_triangle};
+    const auto bounds = static_motion_bounds(triangles);
+
+    EXPECT_THROW(
+        hw3d::CpuIntersectionDetector(
+            triangles,
+            bounds,
+            hw3d::maximum_cached_triangle_pair_count + 1),
+        std::invalid_argument);
+}
+
+TEST(CpuIntersections, TracksRotationFromInitialGeometryWithScaledAxis)
+{
+    const hw3d::InitialTriangle stationary{
+        .a = base_triangle.a,
+        .b = base_triangle.b,
+        .c = base_triangle.c,
+    };
+    const hw3d::InitialTriangle moving{
+        .a = {10.0F, 0.0F, 0.0F},
+        .b = {8.0F, 0.0F, 0.0F},
+        .c = {10.0F, -2.0F, 0.0F},
+        .rotation_axis_origin = {5.0F, 0.0F, 0.0F},
+        .rotation_axis_direction = {0.0F, 0.0F, 5.0F},
+        .angular_velocity_radians_per_second = std::numbers::pi_v<float>,
+    };
+    const std::vector initial{stationary, moving};
+    std::vector<Triangle> triangles(initial.size());
+    std::vector<hw3d::Aabb> motion_bounds(initial.size());
+    hw3d::calculate_motion_bounds(initial, motion_bounds);
+    hw3d::update_vertices(initial, triangles, std::chrono::duration<double>{0.0});
+    hw3d::CpuIntersectionDetector detector{triangles, motion_bounds};
+
+    detector.update();
+    EXPECT_FALSE(triangles[0].highlighted);
+    EXPECT_FALSE(triangles[1].highlighted);
+
+    hw3d::update_vertices(initial, triangles, std::chrono::duration<double>{1.0});
+    detector.update();
+    EXPECT_TRUE(triangles[0].highlighted);
+    EXPECT_TRUE(triangles[1].highlighted);
+}
+
+TEST(CpuIntersections, ValidatesPersistentSceneShape)
+{
+    std::vector<Triangle> triangles{base_triangle};
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::CpuIntersectionDetector detector{triangles, bounds};
+
+    triangles.push_back(base_triangle);
+    EXPECT_THROW(detector.update(), std::logic_error);
+
+    std::vector<Triangle> separate{base_triangle};
+    const std::vector<hw3d::Aabb> no_bounds;
+    EXPECT_THROW(
+        hw3d::CpuIntersectionDetector(separate, no_bounds),
+        std::invalid_argument);
 }
 
 TEST(CpuIntersections, DetectsIdenticalTriangles)
@@ -486,8 +670,10 @@ TEST(CpuIntersections, RejectsNanAndInfinityBeforeBroadPhase)
     Triangle nan_triangle = base_triangle;
     nan_triangle.a.x = std::numeric_limits<float>::quiet_NaN();
     std::vector<Triangle> nan_triangles{nan_triangle};
+    const std::vector nan_bounds{hw3d::Aabb{}};
+    hw3d::CpuIntersectionDetector nan_detector{nan_triangles, nan_bounds};
     EXPECT_THROW(
-        hw3d::cpu_collisions(nan_triangles),
+        nan_detector.update(),
         std::invalid_argument);
 
     Triangle infinite_triangle = base_triangle;
@@ -496,8 +682,14 @@ TEST(CpuIntersections, RejectsNanAndInfinityBeforeBroadPhase)
         base_triangle,
         infinite_triangle,
     };
+    const std::vector infinite_bounds{
+        hw3d::aabb(base_triangle),
+        hw3d::aabb(base_triangle),
+    };
+    hw3d::CpuIntersectionDetector infinite_detector{
+        infinite_triangles, infinite_bounds};
     EXPECT_THROW(
-        hw3d::cpu_collisions(infinite_triangles),
+        infinite_detector.update(),
         std::invalid_argument);
 }
 
@@ -517,7 +709,10 @@ TEST(CpuIntersections, FixedRandomizedSetIsMetamorphic)
             {next_coordinate(), next_coordinate(), next_coordinate()},
             {next_coordinate(), next_coordinate(), next_coordinate()}));
     }
-    hw3d::cpu_collisions(original);
+    const auto original_bounds = static_motion_bounds(original);
+    hw3d::CpuIntersectionDetector original_detector{
+        original, original_bounds};
+    original_detector.update();
 
     std::vector<Triangle> transformed;
     transformed.reserve(original.size());
@@ -525,7 +720,10 @@ TEST(CpuIntersections, FixedRandomizedSetIsMetamorphic)
         const Triangle permuted{value.b, value.c, value.a};
         transformed.push_back(scaled(permuted, 0x1p-10F));
     }
-    hw3d::cpu_collisions(transformed);
+    const auto transformed_bounds = static_motion_bounds(transformed);
+    hw3d::CpuIntersectionDetector transformed_detector{
+        transformed, transformed_bounds};
+    transformed_detector.update();
     ASSERT_EQ(transformed.size(), original.size());
     for (std::size_t index = 0; index < transformed.size(); ++index) {
         EXPECT_EQ(transformed[index].highlighted, original[index].highlighted)

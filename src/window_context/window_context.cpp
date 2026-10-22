@@ -33,6 +33,7 @@ public:
         if (title == nullptr) {
             throw std::invalid_argument("window title must not be null");
         }
+        title_ = title;
         if (window_context_exists) {
             throw std::logic_error(
                 "only one WindowContext may exist at a time");
@@ -112,6 +113,8 @@ public:
     void run(const std::function<void(const FrameInput&)>& on_frame)
     {
         double previous_time = glfwGetTime();
+        double last_time{glfwGetTime()};
+        int n_frames = 0;
 
         while (glfwWindowShouldClose(window_) == GLFW_FALSE) {
             glfwPollEvents();
@@ -125,6 +128,24 @@ public:
                 0.0,
                 0.1));
             previous_time = current_time;
+
+            n_frames++;
+            if (current_time - last_time >= 1.0) {
+                const double interval_seconds = current_time - last_time;
+                const double fps = n_frames / interval_seconds;
+                const double milliseconds_per_frame =
+                    interval_seconds * 1000.0 / n_frames;
+
+                const std::string title = title_ + " | FPS: "
+                    + std::to_string(fps) + " ("
+                    + std::to_string(milliseconds_per_frame)
+                    + " ms/frame)";
+
+                glfwSetWindowTitle(window_, title.c_str());
+
+                n_frames = 0;
+                last_time = current_time;
+            }
 
             const FrameInput input{
                 .up = glfwGetKey(window_, GLFW_KEY_UP) == GLFW_PRESS,
@@ -199,6 +220,7 @@ private:
     }
 
     GLFWwindow* window_ = nullptr;
+    std::string title_;
     double last_cursor_x_{};
     double last_cursor_y_{};
     float mouse_x_offset_{};
