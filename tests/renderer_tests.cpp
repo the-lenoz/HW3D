@@ -5,10 +5,12 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
 import hw3d.configuration;
+import hw3d.geometry;
 import hw3d.renderer;
 import hw3d.window_context;
 
@@ -33,6 +35,17 @@ const std::vector<hw3d::Triangle> light_perpendicular_triangle{{
     {0.0F, 1.0F, 0.0F},
     {-0.35F, 0.0F, 0.45F},
 }};
+
+std::vector<hw3d::Aabb> static_motion_bounds(
+    const std::vector<hw3d::Triangle>& triangles)
+{
+    std::vector<hw3d::Aabb> result;
+    result.reserve(triangles.size());
+    for (const hw3d::Triangle& triangle : triangles) {
+        result.push_back(hw3d::aabb(triangle));
+    }
+    return result;
+}
 
 void clear_gl_errors() noexcept
 {
@@ -65,7 +78,8 @@ std::array<std::uint8_t, 3> rendered_center_pixel(
     for (hw3d::Triangle& triangle : triangles) {
         triangle.highlighted = highlighted;
     }
-    hw3d::Renderer renderer{triangles};
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::Renderer renderer{triangles, bounds};
     renderer.render();
     glFinish();
     return center_pixel();
@@ -97,8 +111,10 @@ protected:
 
 TEST_F(RendererTest, RejectsEmptyTriangleArray)
 {
+    std::vector<hw3d::Triangle> triangles;
+    const std::vector<hw3d::Aabb> bounds;
     EXPECT_THROW(
-        hw3d::Renderer({}),
+        static_cast<void>(hw3d::Renderer{triangles, bounds}),
         std::invalid_argument);
 }
 
@@ -106,12 +122,25 @@ TEST_F(RendererTest, ReadsHighlightFromTriangle)
 {
     auto triangles = centered_triangle;
     triangles.front().highlighted = true;
-    EXPECT_NO_THROW({ hw3d::Renderer renderer{triangles}; });
+    const auto bounds = static_motion_bounds(triangles);
+    EXPECT_NO_THROW({ hw3d::Renderer renderer(triangles, bounds); });
+}
+
+TEST_F(RendererTest, RejectsMismatchedMotionBounds)
+{
+    auto triangles = centered_triangle;
+    const std::vector<hw3d::Aabb> bounds;
+
+    EXPECT_THROW(
+        static_cast<void>(hw3d::Renderer{triangles, bounds}),
+        std::invalid_argument);
 }
 
 TEST_F(RendererTest, ConfiguresDepthTestAndRendersGrayTriangle)
 {
-    hw3d::Renderer renderer{centered_triangle};
+    auto triangles = centered_triangle;
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::Renderer renderer{triangles, bounds};
 
     renderer.render();
     glFinish();
@@ -131,16 +160,54 @@ TEST_F(RendererTest, ConfiguresDepthTestAndRendersGrayTriangle)
 TEST_F(RendererTest, RendersHighlightedTriangleRed)
 {
     auto triangles = centered_triangle;
-    triangles.front().highlighted = true;
-    hw3d::Renderer renderer{triangles};
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::Renderer renderer{triangles, bounds};
 
     renderer.render();
     glFinish();
-    const auto pixel = center_pixel();
+    const auto regular_pixel = center_pixel();
 
-    EXPECT_GT(pixel[0], pixel[1] + 60U);
-    EXPECT_GT(pixel[0], pixel[2] + 60U);
+    triangles.front().highlighted = true;
+    renderer.render();
+    glFinish();
+    const auto highlighted_pixel = center_pixel();
+
+    EXPECT_NEAR(regular_pixel[0], regular_pixel[1], 3);
+    EXPECT_GT(highlighted_pixel[0], highlighted_pixel[1] + 60U);
+    EXPECT_GT(highlighted_pixel[0], highlighted_pixel[2] + 60U);
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
+}
+
+TEST_F(RendererTest, ReadsChangedVerticesFromOriginalVector)
+{
+    auto triangles = centered_triangle;
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::Renderer renderer{triangles, bounds};
+
+    renderer.render();
+    glFinish();
+    const auto original_pixel = center_pixel();
+
+    triangles.front().a.x += 100.0F;
+    triangles.front().b.x += 100.0F;
+    triangles.front().c.x += 100.0F;
+    renderer.render();
+    glFinish();
+    const auto moved_pixel = center_pixel();
+
+    EXPECT_GT(original_pixel[0], 40U);
+    EXPECT_LT(moved_pixel[0], 20U);
+    EXPECT_EQ(glGetError(), GL_NO_ERROR);
+}
+
+TEST_F(RendererTest, AcceptsTriangleSpan)
+{
+    auto triangles = centered_triangle;
+    const auto bounds = static_motion_bounds(triangles);
+    const std::span<const hw3d::Triangle> triangle_span{triangles};
+
+    EXPECT_NO_THROW(
+        static_cast<void>(hw3d::Renderer{triangle_span, bounds}));
 }
 
 TEST_F(RendererTest, UsesDimAmbientAndStrongerDirectionalDiffuse)
@@ -162,7 +229,9 @@ TEST_F(RendererTest, UsesDimAmbientAndStrongerDirectionalDiffuse)
 
 TEST_F(RendererTest, MovementAndRotationMethodsRemainRenderable)
 {
-    hw3d::Renderer renderer{centered_triangle};
+    auto triangles = centered_triangle;
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::Renderer renderer{triangles, bounds};
 
     renderer.move_forward(0.1F);
     renderer.move_back(0.1F);
@@ -177,7 +246,9 @@ TEST_F(RendererTest, MovementAndRotationMethodsRemainRenderable)
 
 TEST_F(RendererTest, RenderSkipsZeroSizedViewport)
 {
-    hw3d::Renderer renderer{centered_triangle};
+    auto triangles = centered_triangle;
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::Renderer renderer{triangles, bounds};
     glViewport(0, 0, 0, 0);
 
     renderer.render();

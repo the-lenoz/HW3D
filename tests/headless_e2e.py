@@ -57,10 +57,11 @@ def triangle_at(x: float) -> Triangle:
 
 
 def encode_triangles(triangles: Sequence[Triangle], newline: str = "\n") -> str:
-    lines = [str(len(triangles))]
+    lines = [str(len(triangles)), "1"]
     for triangle in triangles:
         for index in range(0, 9, 3):
             lines.append(" ".join(str(value) for value in triangle[index : index + 3]))
+        lines.extend(("0 0 0", "0 0 1", "0"))
     return newline.join(lines) + newline
 
 
@@ -260,7 +261,8 @@ def run_cpu_process_cases(runner: Runner) -> None:
     runner.run(
         "arbitrary whitespace and trailing data",
         ("--headless",),
-        "  1\r\n\t0 0 0\r\n2\t0 0\n0 2 0\r\n trailing data",
+        "  1\r\n 3\n\t0 0 0\r\n2\t0 0\n0 2 0\r\n"
+        " 0 0 0\t0 0 1\n0\r\n trailing data",
         0,
         "0\n",
     )

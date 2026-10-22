@@ -6,6 +6,8 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <unordered_map>
@@ -14,6 +16,7 @@ module;
 
 module hw3d.cpu_intersections;
 
+import hw3d.configuration;
 import hw3d.geometry;
 
 namespace hw3d {
@@ -34,15 +37,6 @@ struct TriangleSurface {
 };
 
 using Primitive = std::variant<Point, Segment, TriangleSurface>;
-
-struct BroadPhaseEntry {
-    std::size_t id;
-    Aabb bounds;
-    Voxel voxel;
-};
-
-struct DVec3 { double x; double y; double z; };
-struct DoubleVoxelGrid { DVec3 origin; DVec3 voxel_size; };
 
 constexpr std::array<Projection, 3> projections{
     Projection::xy, Projection::xz, Projection::yz,
@@ -394,72 +388,6 @@ bool intersects(const Primitive& left, const Primitive& right)
         right);
 }
 
-DoubleVoxelGrid make_double_voxel_grid(
-    std::span<Aabb> bounds) noexcept
-{
-    DVec3 origin{
-        std::numeric_limits<double>::max(),
-        std::numeric_limits<double>::max(),
-        std::numeric_limits<double>::max(),
-    };
-    DVec3 voxel_size{};
-    for (const Aabb& value : bounds) {
-        origin.x = std::min(origin.x, static_cast<double>(value.minimum.x));
-        origin.y = std::min(origin.y, static_cast<double>(value.minimum.y));
-        origin.z = std::min(origin.z, static_cast<double>(value.minimum.z));
-        voxel_size.x = std::max(voxel_size.x,
-            static_cast<double>(value.maximum.x) - value.minimum.x);
-        voxel_size.y = std::max(voxel_size.y,
-            static_cast<double>(value.maximum.y) - value.minimum.y);
-        voxel_size.z = std::max(voxel_size.z,
-            static_cast<double>(value.maximum.z) - value.minimum.z);
-    }
-    const double fallback_size = std::max({
-        voxel_size.x, voxel_size.y, voxel_size.z, 1.0,
-    });
-    if (voxel_size.x == 0.0) voxel_size.x = fallback_size;
-    if (voxel_size.y == 0.0) voxel_size.y = fallback_size;
-    if (voxel_size.z == 0.0) voxel_size.z = fallback_size;
-    return {origin, voxel_size};
-}
-
-std::int64_t double_voxel_coordinate(
-    const double value,
-    const double origin,
-    const double voxel_size) noexcept
-{
-    constexpr std::int64_t coordinate_limit =
-        std::numeric_limits<std::int64_t>::max() / 4;
-    const double scaled = (value - origin) / voxel_size;
-    if (!std::isfinite(scaled)
-        || scaled >= static_cast<double>(coordinate_limit)) {
-        return coordinate_limit;
-    }
-    if (scaled <= static_cast<double>(-coordinate_limit)) {
-        return -coordinate_limit;
-    }
-    return static_cast<std::int64_t>(std::floor(scaled));
-}
-
-Voxel double_voxel_for(
-    const Aabb& bounds,
-    const DoubleVoxelGrid& grid) noexcept
-{
-    const DVec3 center{
-        static_cast<double>(bounds.minimum.x)
-            + (static_cast<double>(bounds.maximum.x) - bounds.minimum.x) * 0.5,
-        static_cast<double>(bounds.minimum.y)
-            + (static_cast<double>(bounds.maximum.y) - bounds.minimum.y) * 0.5,
-        static_cast<double>(bounds.minimum.z)
-            + (static_cast<double>(bounds.maximum.z) - bounds.minimum.z) * 0.5,
-    };
-    return {
-        double_voxel_coordinate(center.x, grid.origin.x, grid.voxel_size.x),
-        double_voxel_coordinate(center.y, grid.origin.y, grid.voxel_size.y),
-        double_voxel_coordinate(center.z, grid.origin.z, grid.voxel_size.z),
-    };
-}
-
 bool finite(const Vec3& point) noexcept
 {
     return std::isfinite(point.x)
@@ -469,73 +397,146 @@ bool finite(const Vec3& point) noexcept
 
 }
 
-void cpu_collisions(std::vector<Triangle>& triangles)
-{
-    for (const Triangle& triangle : triangles) {
-        if (!finite(triangle.a) || !finite(triangle.b) || !finite(triangle.c)) {
-            throw std::invalid_argument("triangle coordinates must be finite");
+class CpuIntersectionDetector::Impl final {
+public:
+    Impl(
+        std::vector<Triangle>& triangles,
+        const std::span<const Aabb> motion_bounds,
+        const std::size_t maximum_pair_count)
+        : triangles_(triangles),
+          triangle_count_(triangles.size()),
+          primitives_(triangle_count_, Point{}),
+          current_bounds_(triangle_count_),
+          active_ids_(triangle_count_)
+    {
+        if (motion_bounds.size() != triangle_count_) {
+            throw std::invalid_argument(
+                "triangle and motion bound counts must match");
+        }
+        if (maximum_pair_count > maximum_cached_triangle_pair_count) {
+            throw std::invalid_argument(
+                "intersection pair budget exceeds the supported maximum");
+        }
+
+        static_assert(sizeof(TrianglePair) == 8);
+        MotionPairCandidates candidates = make_motion_pair_candidates(
+            motion_bounds,
+            maximum_pair_count);
+
+        if (candidates.pairs.has_value()) {
+            pairs_ = std::move(candidates.pairs);
+            for (const TrianglePair pair : *pairs_) {
+                active_ids_[pair.first] = 1;
+                active_ids_[pair.second] = 1;
+            }
+        } else {
+            fallback_voxels_ = std::move(candidates.voxels);
+            grid_.reserve(triangle_count_);
+            for (std::size_t id = 0; id < triangle_count_; ++id) {
+                grid_[fallback_voxels_[id]].push_back(id);
+            }
         }
     }
-    for (Triangle& triangle : triangles) {
-        triangle.highlighted = false;
-    }
-    if (triangles.size() < 2) {
-        return;
-    }
 
-    std::vector<Aabb> bounds;
-    bounds.reserve(triangles.size());
-    for (const Triangle& triangle : triangles) {
-        bounds.push_back(aabb(triangle));
-    }
+    void update()
+    {
+        if (triangles_.size() != triangle_count_) {
+            throw std::logic_error(
+                "intersection detector triangle count cannot change");
+        }
 
-    const DoubleVoxelGrid voxel_grid = make_double_voxel_grid(bounds);
-    std::vector<Primitive> primitives;
-    primitives.reserve(triangles.size());
-    std::vector<BroadPhaseEntry> entries;
-    entries.reserve(triangles.size());
-    std::unordered_map<Voxel, std::vector<std::size_t>, VoxelHash> grid;
-    grid.reserve(triangles.size());
+        for (std::size_t id = 0; id < triangle_count_; ++id) {
+            Triangle& triangle = triangles_[id];
+            if (!finite(triangle.a)
+                || !finite(triangle.b)
+                || !finite(triangle.c)) {
+                throw std::invalid_argument(
+                    "triangle coordinates must be finite");
+            }
+            triangle.highlighted = false;
+            if (pairs_.has_value() && active_ids_[id] == 0) {
+                continue;
+            }
+            current_bounds_[id] = aabb(triangle);
+            primitives_[id] = make_primitive(triangle);
+        }
 
-    for (std::size_t id = 0; id < triangles.size(); ++id) {
-        const Voxel voxel = double_voxel_for(bounds[id], voxel_grid);
-        primitives.push_back(make_primitive(triangles[id]));
-        entries.push_back({id, bounds[id], voxel});
-        grid[voxel].push_back(id);
-    }
+        const auto test_pair = [&](const std::size_t first,
+                                   const std::size_t second) {
+            if (triangles_[first].highlighted
+                && triangles_[second].highlighted) {
+                return;
+            }
+            if (!aabbs_intersect(
+                    current_bounds_[first],
+                    current_bounds_[second])) {
+                return;
+            }
+            if (!intersects(primitives_[first], primitives_[second])) {
+                return;
+            }
+            triangles_[first].highlighted = true;
+            triangles_[second].highlighted = true;
+        };
 
-    for (const BroadPhaseEntry& current : entries) {
-        for (std::int64_t x_offset = -1; x_offset <= 1; ++x_offset) {
-            for (std::int64_t y_offset = -1; y_offset <= 1; ++y_offset) {
-                for (std::int64_t z_offset = -1; z_offset <= 1; ++z_offset) {
-                    const Voxel neighbor{
-                        current.voxel.x + x_offset,
-                        current.voxel.y + y_offset,
-                        current.voxel.z + z_offset,
-                    };
-                    const auto bucket = grid.find(neighbor);
-                    if (bucket == grid.end()) continue;
-                    for (const std::size_t candidate_id : bucket->second) {
-                        if (candidate_id <= current.id) continue;
-                        if (triangles[current.id].highlighted
-                            && triangles[candidate_id].highlighted) {
-                            continue;
+        if (pairs_.has_value()) {
+            for (const TrianglePair pair : *pairs_) {
+                test_pair(pair.first, pair.second);
+            }
+            return;
+        }
+
+        for (std::size_t current_id = 0;
+             current_id < triangle_count_;
+             ++current_id) {
+            const Voxel current_voxel = fallback_voxels_[current_id];
+            for (std::int64_t x_offset = -1; x_offset <= 1; ++x_offset) {
+                for (std::int64_t y_offset = -1; y_offset <= 1; ++y_offset) {
+                    for (std::int64_t z_offset = -1; z_offset <= 1; ++z_offset) {
+                        const Voxel neighbor{
+                            current_voxel.x + x_offset,
+                            current_voxel.y + y_offset,
+                            current_voxel.z + z_offset,
+                        };
+                        const auto bucket = grid_.find(neighbor);
+                        if (bucket == grid_.end()) continue;
+                        for (const std::size_t candidate_id : bucket->second) {
+                            if (candidate_id <= current_id) continue;
+                            test_pair(current_id, candidate_id);
                         }
-                        if (!aabbs_intersect(current.bounds, bounds[candidate_id])) {
-                            continue;
-                        }
-                        if (!intersects(
-                                primitives[current.id],
-                                primitives[candidate_id])) {
-                            continue;
-                        }
-                        triangles[current.id].highlighted = true;
-                        triangles[candidate_id].highlighted = true;
                     }
                 }
             }
         }
     }
+
+private:
+    std::vector<Triangle>& triangles_;
+    std::size_t triangle_count_{};
+    std::vector<Primitive> primitives_;
+    std::vector<Aabb> current_bounds_;
+    std::vector<std::uint8_t> active_ids_;
+    std::vector<Voxel> fallback_voxels_;
+    std::optional<std::vector<TrianglePair>> pairs_;
+    std::unordered_map<Voxel, std::vector<std::size_t>, VoxelHash> grid_;
+};
+
+CpuIntersectionDetector::CpuIntersectionDetector(
+    std::vector<Triangle>& triangles,
+    const std::span<const Aabb> motion_bounds,
+    const std::size_t maximum_pair_count)
+    : impl_(std::make_unique<Impl>(
+          triangles,
+          motion_bounds,
+          maximum_pair_count))
+{
+}
+
+CpuIntersectionDetector::~CpuIntersectionDetector() = default;
+
+void CpuIntersectionDetector::update()
+{
+    impl_->update();
 }
 
 }

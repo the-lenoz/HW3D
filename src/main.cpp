@@ -1,7 +1,9 @@
 #include <cstddef>
 #include <exception>
 #include <algorithm>
+#include <chrono>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -67,8 +69,16 @@ void print_highlights(const std::span<const hw3d::Triangle> triangles)
 int main(const int argc, char** argv) try
 {
     const Options options = parse_options(argc, argv);
-    auto configuration = hw3d::read_configuration(std::cin);
-    auto& triangles = configuration.triangles;
+    const auto configuration = hw3d::read_configuration(std::cin);
+    std::vector<hw3d::Triangle> triangles(configuration.triangles.size());
+    std::vector<hw3d::Aabb> motion_bounds(configuration.triangles.size());
+    hw3d::calculate_motion_bounds(
+        configuration.triangles,
+        motion_bounds);
+    hw3d::update_vertices(
+        configuration.triangles,
+        triangles,
+        std::chrono::duration<double>::zero());
 
     bool use_gpu_intersections = options.use_gpu_intersections;
     if (use_gpu_intersections
@@ -80,7 +90,9 @@ int main(const int argc, char** argv) try
     }
 
     if (options.headless && !use_gpu_intersections) {
-        hw3d::cpu_collisions(triangles);
+        hw3d::CpuIntersectionDetector detector{
+            triangles, motion_bounds};
+        detector.update();
         print_highlights(triangles);
         return 0;
     }
@@ -91,20 +103,42 @@ int main(const int argc, char** argv) try
         options.headless ? "HW3D headless" : "HW3D",
         options.headless};
 
-    if (use_gpu_intersections) {
-        hw3d::gpu_collisions(triangles);
-    } else {
-        hw3d::cpu_collisions(triangles);
-    }
-
     if (options.headless) {
+        hw3d::GpuIntersectionDetector detector{
+            triangles, motion_bounds};
+        detector.update();
         print_highlights(triangles);
         return 0;
     }
 
-    hw3d::Renderer renderer{triangles};
+    std::unique_ptr<hw3d::CpuIntersectionDetector> cpu_detector;
+    std::unique_ptr<hw3d::GpuIntersectionDetector> gpu_detector;
+    if (use_gpu_intersections) {
+        gpu_detector = std::make_unique<hw3d::GpuIntersectionDetector>(
+            triangles, motion_bounds);
+    } else {
+        cpu_detector = std::make_unique<hw3d::CpuIntersectionDetector>(
+            triangles, motion_bounds);
+    }
+    hw3d::Renderer renderer{triangles, motion_bounds};
+    std::chrono::duration<double> elapsed{};
+    const std::chrono::duration<double> simulation_duration =
+        configuration.simulation_duration;
 
-    window.run([&renderer](const hw3d::FrameInput& input) {
+    window.run([&](const hw3d::FrameInput& input) {
+        elapsed = std::min(
+            elapsed + std::chrono::duration<double>{input.delta_seconds},
+            simulation_duration);
+        hw3d::update_vertices(
+            configuration.triangles,
+            triangles,
+            elapsed);
+
+        if (use_gpu_intersections) {
+            gpu_detector->update();
+        } else {
+            cpu_detector->update();
+        }
         renderer.rotate(input.mouse_x_offset, input.mouse_y_offset);
         if (input.up) {
             renderer.move_forward(input.delta_seconds);
@@ -119,6 +153,9 @@ int main(const int argc, char** argv) try
             renderer.move_right(input.delta_seconds);
         }
         renderer.render();
+        if (elapsed >= simulation_duration) {
+            window.request_close();
+        }
     });
     return 0;
 } catch (const std::exception& error) {

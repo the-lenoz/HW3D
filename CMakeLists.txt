@@ -219,6 +219,8 @@ if(BUILD_TESTING)
 
     set(HW3D_HEADLESS_E2E_SCRIPT
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_e2e.py")
+    set(HW3D_WINDOWED_E2E_SCRIPT
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windowed_e2e.py")
 
     add_test(
         NAME headless_cpu_e2e
@@ -266,6 +268,51 @@ if(BUILD_TESTING)
             RUN_SERIAL TRUE
             TIMEOUT 180
             ENVIRONMENT_MODIFICATION "WAYLAND_DISPLAY=unset:"
+    )
+
+    set(HW3D_WINDOWED_E2E_COMMAND
+        "${Python3_EXECUTABLE}"
+        "${HW3D_WINDOWED_E2E_SCRIPT}")
+    if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
+        list(PREPEND HW3D_WINDOWED_E2E_COMMAND
+            "${HW3D_XVFB_RUN_EXECUTABLE}" -a)
+    endif()
+    add_test(
+        NAME windowed_cpu_e2e
+        COMMAND ${HW3D_WINDOWED_E2E_COMMAND}
+            --binary "$<TARGET_FILE:hw3d>"
+            --backend cpu
+    )
+    add_test(
+        NAME windowed_gpu_e2e
+        COMMAND ${HW3D_WINDOWED_E2E_COMMAND}
+            --binary "$<TARGET_FILE:hw3d>"
+            --backend gpu
+    )
+    add_test(
+        NAME generate_triangles_e2e
+        COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_triangles_tests.py"
+            --generator "${CMAKE_CURRENT_SOURCE_DIR}/generate_triangles.py"
+            --binary "$<TARGET_FILE:hw3d>"
+    )
+    set_tests_properties(
+        windowed_cpu_e2e
+        windowed_gpu_e2e
+        PROPERTIES
+            LABELS e2e
+            RUN_SERIAL TRUE
+            TIMEOUT 30
+            ENVIRONMENT_MODIFICATION "WAYLAND_DISPLAY=unset:"
+    )
+    set_tests_properties(
+        generate_triangles_e2e
+        PROPERTIES
+            LABELS e2e
+            TIMEOUT 60
+            ENVIRONMENT_MODIFICATION
+                "DISPLAY=unset:;WAYLAND_DISPLAY=unset:"
     )
 
     set_tests_properties(
