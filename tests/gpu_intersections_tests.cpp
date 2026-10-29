@@ -4,18 +4,22 @@
 
 #include <cstddef>
 #include <chrono>
+#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
 #include "embedded_shaders.hpp"
 
 import hw3d.configuration;
+import hw3d.cpu_intersections;
 import hw3d.geometry;
 import hw3d.gpu_intersections;
+import hw3d.gpu_triangles;
 import hw3d.shader_program;
 import hw3d.window_context;
 
@@ -37,6 +41,11 @@ Triangle point(const Vec3 value) noexcept
     return {value, value, value};
 }
 
+Triangle segment(const Vec3 first, const Vec3 second) noexcept
+{
+    return {first, second, second};
+}
+
 Triangle translated(const Triangle& value, const Vec3 offset) noexcept
 {
     const auto translate = [&](const Vec3 point) noexcept {
@@ -51,6 +60,18 @@ Triangle translated(const Triangle& value, const Vec3 offset) noexcept
         translate(value.b),
         translate(value.c),
     };
+}
+
+Triangle scaled(const Triangle& value, const float factor) noexcept
+{
+    const auto scale = [&](const Vec3 point) noexcept {
+        return Vec3{
+            point.x * factor,
+            point.y * factor,
+            point.z * factor,
+        };
+    };
+    return {scale(value.a), scale(value.b), scale(value.c)};
 }
 
 std::vector<hw3d::Aabb> static_motion_bounds(
@@ -69,6 +90,33 @@ void clear_gl_errors() noexcept
     while (glGetError() != GL_NO_ERROR) {
     }
 }
+
+class GpuDetectorHarness final {
+public:
+    GpuDetectorHarness(
+        std::vector<Triangle>& triangles,
+        const std::span<const hw3d::Aabb> motion_bounds,
+        const std::size_t maximum_pair_count =
+            hw3d::maximum_cached_triangle_pair_count)
+        : triangles_(triangles),
+          buffer_(triangles.size()),
+          detector_(buffer_, motion_bounds, maximum_pair_count)
+    {
+        buffer_.upload(triangles_);
+    }
+
+    void update()
+    {
+        buffer_.upload(triangles_);
+        detector_.update();
+        buffer_.download(triangles_);
+    }
+
+private:
+    std::vector<Triangle>& triangles_;
+    hw3d::GpuTriangleBuffer buffer_;
+    hw3d::GpuIntersectionDetector detector_;
+};
 
 class GpuIntersectionsTest : public ::testing::Test {
 protected:
@@ -95,7 +143,7 @@ protected:
         const std::initializer_list<bool> expected)
     {
         const auto bounds = static_motion_bounds(triangles);
-        hw3d::GpuIntersectionDetector detector{triangles, bounds};
+        GpuDetectorHarness detector{triangles, bounds};
         detector.update();
         ASSERT_EQ(triangles.size(), expected.size());
         std::size_t index = 0;
@@ -103,6 +151,26 @@ protected:
             EXPECT_EQ(triangles[index].highlighted, value)
                 << "triangle index: " << index;
             ++index;
+        }
+        EXPECT_EQ(glGetError(), GL_NO_ERROR);
+    }
+
+    void expect_matches_cpu(std::vector<Triangle> triangles)
+    {
+        const auto bounds = static_motion_bounds(triangles);
+        std::vector<Triangle> cpu_triangles = triangles;
+        hw3d::CpuIntersectionDetector cpu_detector{cpu_triangles, bounds};
+        GpuDetectorHarness gpu_detector{triangles, bounds};
+
+        cpu_detector.update();
+        gpu_detector.update();
+
+        ASSERT_EQ(triangles.size(), cpu_triangles.size());
+        for (std::size_t index = 0; index < triangles.size(); ++index) {
+            EXPECT_EQ(
+                triangles[index].highlighted,
+                cpu_triangles[index].highlighted)
+                << "triangle index: " << index;
         }
         EXPECT_EQ(glGetError(), GL_NO_ERROR);
     }
@@ -149,7 +217,7 @@ TEST_F(GpuIntersectionsTest, ClearsPreviousHighlights)
     triangles[1].highlighted = true;
 
     const auto bounds = static_motion_bounds(triangles);
-    hw3d::GpuIntersectionDetector detector{triangles, bounds};
+    GpuDetectorHarness detector{triangles, bounds};
     detector.update();
 
     EXPECT_FALSE(triangles[0].highlighted);
@@ -168,7 +236,7 @@ TEST_F(GpuIntersectionsTest, ReusesBuffersAndStaticMotionPairsAcrossUpdates)
         {{-1.0F, -1.0F, -1.0F}, {3.0F, 3.0F, 1.0F}},
         {{-1.0F, -1.0F, -1.0F}, {53.0F, 3.0F, 1.0F}},
     };
-    hw3d::GpuIntersectionDetector detector{triangles, motion_bounds};
+    GpuDetectorHarness detector{triangles, motion_bounds};
 
     detector.update();
     EXPECT_FALSE(triangles[0].highlighted);
@@ -186,11 +254,11 @@ TEST_F(GpuIntersectionsTest, ReusesBuffersAndStaticMotionPairsAcrossUpdates)
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
 }
 
-TEST_F(GpuIntersectionsTest, PairBuffersSurviveRuntimeVectorReallocation)
+TEST_F(GpuIntersectionsTest, PairBuffersSurviveRepeatedHostUploads)
 {
     std::vector<Triangle> triangles{base_triangle, base_triangle};
     const auto bounds = static_motion_bounds(triangles);
-    hw3d::GpuIntersectionDetector detector{triangles, bounds};
+    GpuDetectorHarness detector{triangles, bounds};
 
     const Triangle* const old_data = triangles.data();
     triangles.reserve(triangles.capacity() + 100);
@@ -209,7 +277,7 @@ TEST_F(GpuIntersectionsTest, ReusesDensePairGraphWithoutStaleHighlights)
     const std::vector<hw3d::Aabb> motion_bounds(
         triangle_count,
         {{-100.0F, -100.0F, -1.0F}, {100.0F, 100.0F, 1.0F}});
-    hw3d::GpuIntersectionDetector detector{triangles, motion_bounds};
+    GpuDetectorHarness detector{triangles, motion_bounds};
 
     detector.update();
     for (std::size_t index = 0; index < triangle_count; ++index) {
@@ -238,7 +306,7 @@ TEST_F(GpuIntersectionsTest, VoxelFallbackUpdatesFlagsAndPreservesInputOrder)
     };
     for (const std::size_t budget : {std::size_t{0}, std::size_t{1}}) {
         std::vector<Triangle> triangles{base_triangle, base_triangle, far};
-        hw3d::GpuIntersectionDetector detector{
+        GpuDetectorHarness detector{
             triangles, motion_bounds, budget};
 
         detector.update();
@@ -260,7 +328,7 @@ TEST_F(GpuIntersectionsTest, EmptyPairCacheStillValidatesCoordinatesAndClearsFla
     std::vector<Triangle> triangles{base_triangle};
     triangles[0].highlighted = true;
     const auto bounds = static_motion_bounds(triangles);
-    hw3d::GpuIntersectionDetector detector{triangles, bounds};
+    GpuDetectorHarness detector{triangles, bounds};
 
     detector.update();
     EXPECT_FALSE(triangles[0].highlighted);
@@ -273,10 +341,11 @@ TEST_F(GpuIntersectionsTest, RejectsPairBudgetAboveSupportedMaximum)
 {
     std::vector<Triangle> triangles{base_triangle};
     const auto bounds = static_motion_bounds(triangles);
+    hw3d::GpuTriangleBuffer buffer{triangles.size()};
 
     EXPECT_THROW(
         hw3d::GpuIntersectionDetector(
-            triangles,
+            buffer,
             bounds,
             hw3d::maximum_cached_triangle_pair_count + 1),
         std::invalid_argument);
@@ -301,33 +370,30 @@ TEST_F(GpuIntersectionsTest, TracksRotationFromInitialGeometryWithScaledAxis)
     std::vector<Triangle> triangles(initial.size());
     std::vector<hw3d::Aabb> motion_bounds(initial.size());
     hw3d::calculate_motion_bounds(initial, motion_bounds);
-    hw3d::update_vertices(initial, triangles, std::chrono::duration<double>{0.0});
-    hw3d::GpuIntersectionDetector detector{triangles, motion_bounds};
+    hw3d::GpuTriangleBuffer buffer{initial.size()};
+    hw3d::GpuVertexUpdater updater{initial, buffer};
+    hw3d::GpuIntersectionDetector detector{buffer, motion_bounds};
 
+    updater.update(std::chrono::duration<double>{0.0});
     detector.update();
+    buffer.download(triangles);
     EXPECT_FALSE(triangles[0].highlighted);
     EXPECT_FALSE(triangles[1].highlighted);
 
-    hw3d::update_vertices(initial, triangles, std::chrono::duration<double>{1.0});
+    updater.update(std::chrono::duration<double>{1.0});
     detector.update();
+    buffer.download(triangles);
     EXPECT_TRUE(triangles[0].highlighted);
     EXPECT_TRUE(triangles[1].highlighted);
     EXPECT_EQ(glGetError(), GL_NO_ERROR);
 }
 
-TEST_F(GpuIntersectionsTest, ValidatesPersistentSceneShape)
+TEST_F(GpuIntersectionsTest, RejectsMismatchedMotionBounds)
 {
-    std::vector<Triangle> triangles{base_triangle};
-    const auto bounds = static_motion_bounds(triangles);
-    hw3d::GpuIntersectionDetector detector{triangles, bounds};
-
-    triangles.push_back(base_triangle);
-    EXPECT_THROW(detector.update(), std::logic_error);
-
-    std::vector<Triangle> separate{base_triangle};
+    hw3d::GpuTriangleBuffer buffer{1};
     const std::vector<hw3d::Aabb> no_bounds;
     EXPECT_THROW(
-        hw3d::GpuIntersectionDetector(separate, no_bounds),
+        hw3d::GpuIntersectionDetector(buffer, no_bounds),
         std::invalid_argument);
 }
 
@@ -445,6 +511,165 @@ TEST_F(GpuIntersectionsTest, ResultDoesNotDependOnPairOrder)
     expect_collisions({vertical, base_triangle}, {true, true});
 }
 
+TEST_F(GpuIntersectionsTest, HandlesDegeneratePointPairs)
+{
+    const Triangle equal = point({1.0F, 2.0F, 3.0F});
+    const Triangle different = point({1.01F, 2.0F, 3.0F});
+
+    expect_collisions({equal, equal, different}, {true, true, false});
+}
+
+TEST_F(GpuIntersectionsTest, HandlesPointTrianglePairs)
+{
+    const Triangle inside = point({0.5F, 0.5F, 0.0F});
+    const Triangle on_edge = point({1.0F, 1.0F, 0.0F});
+    const Triangle outside = point({1.5F, 1.5F, 0.0F});
+
+    expect_collisions(
+        {base_triangle, inside, on_edge, outside},
+        {true, true, true, false});
+}
+
+TEST_F(GpuIntersectionsTest, HandlesSegmentTrianglePairs)
+{
+    const Triangle piercing = segment(
+        {0.5F, 0.5F, -1.0F},
+        {0.5F, 0.5F, 1.0F});
+    const Triangle coplanar = segment(
+        {-1.0F, 0.5F, 0.0F},
+        {1.0F, 0.5F, 0.0F});
+    const Triangle inside = segment(
+        {0.25F, 0.25F, 0.0F},
+        {0.75F, 0.25F, 0.0F});
+    const Triangle touching = segment(
+        {-1.0F, 1.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F});
+    const Triangle missing = segment(
+        {1.5F, 1.5F, -1.0F},
+        {1.5F, 1.5F, 1.0F});
+
+    expect_collisions(
+        {base_triangle, piercing, coplanar, inside, touching, missing},
+        {true, true, true, true, true, false});
+}
+
+TEST_F(GpuIntersectionsTest, HandlesSegmentSegmentPairs)
+{
+    const Triangle horizontal = segment(
+        {-1.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F});
+    const Triangle vertical = segment(
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F});
+    const Triangle skew = segment(
+        {0.0F, -1.0F, 1.0F},
+        {0.0F, 1.0F, 1.0F});
+    const Triangle overlapping = segment(
+        {0.5F, 0.0F, 0.0F},
+        {2.0F, 0.0F, 0.0F});
+    const Triangle disjoint = segment(
+        {4.0F, 0.0F, 0.0F},
+        {5.0F, 0.0F, 0.0F});
+
+    expect_collisions(
+        {horizontal, vertical, skew, overlapping, disjoint},
+        {true, true, false, true, false});
+}
+
+TEST_F(GpuIntersectionsTest, DegenerateSegmentsAreTranslationAndScaleInvariant)
+{
+    const Triangle horizontal = segment(
+        {-1.0F, 0.0F, 0.0F},
+        {1.0F, 0.0F, 0.0F});
+    const Triangle vertical = segment(
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F});
+    constexpr Vec3 offset{1'000'000.0F, 500'000.0F, -250'000.0F};
+
+    expect_collisions(
+        {
+            translated(scaled(horizontal, 0.25F), offset),
+            translated(scaled(vertical, 0.25F), offset),
+        },
+        {true, true});
+}
+
+TEST_F(GpuIntersectionsTest, HandlesExtremeSmallNonDegenerateTriangles)
+{
+    const Triangle outside = triangle(
+        {1.25F, 1.25F, 0.0F},
+        {3.0F, 1.25F, 0.0F},
+        {1.25F, 3.0F, 0.0F});
+    const Triangle vertical = triangle(
+        {0.5F, 0.5F, -1.0F},
+        {0.5F, 0.5F, 1.0F},
+        {0.5F, 1.5F, 0.0F});
+    constexpr float factor = 1.0e-20F;
+
+    expect_collisions(
+        {
+            scaled(base_triangle, factor),
+            scaled(vertical, factor),
+            scaled(outside, factor),
+        },
+        {true, true, false});
+}
+
+TEST_F(GpuIntersectionsTest, PreservesClassificationAfterLargeTranslation)
+{
+    const Triangle outside = triangle(
+        {1.25F, 1.25F, 0.0F},
+        {3.0F, 1.25F, 0.0F},
+        {1.25F, 3.0F, 0.0F});
+    const Triangle vertical = triangle(
+        {0.5F, 0.5F, -1.0F},
+        {0.5F, 0.5F, 1.0F},
+        {0.5F, 1.5F, 0.0F});
+    constexpr Vec3 offset{1'000'000.0F, -1'000'000.0F, 500'000.0F};
+
+    expect_collisions(
+        {
+            translated(base_triangle, offset),
+            translated(vertical, offset),
+            translated(outside, offset),
+        },
+        {true, true, false});
+}
+
+TEST_F(GpuIntersectionsTest, MatchesCpuForNearlyParallelTriangles)
+{
+    const Triangle nearly_parallel = triangle(
+        {2.1F, 0.0F, 0.0F},
+        {0.0F, 2.1F, 0.0001F},
+        {2.1F, 2.1F, 0.0001F});
+
+    expect_matches_cpu({base_triangle, nearly_parallel});
+}
+
+TEST_F(GpuIntersectionsTest, MatchesCpuForFixedRandomizedSet)
+{
+    std::uint32_t state = 0xc001d00dU;
+    const auto next_coordinate = [&]() {
+        state = state * 1'664'525U + 1'013'904'223U;
+        return static_cast<float>(static_cast<int>(state % 33U) - 16);
+    };
+
+    std::vector<Triangle> triangles;
+    triangles.reserve(40);
+    for (int index = 0; index < 40; ++index) {
+        triangles.push_back(triangle(
+            {next_coordinate(), next_coordinate(), next_coordinate()},
+            {next_coordinate(), next_coordinate(), next_coordinate()},
+            {next_coordinate(), next_coordinate(), next_coordinate()}));
+    }
+    expect_matches_cpu(triangles);
+
+    for (Triangle& value : triangles) {
+        value = scaled({value.b, value.c, value.a}, 0x1p-20F);
+    }
+    expect_matches_cpu(std::move(triangles));
+}
+
 TEST_F(GpuIntersectionsTest, HandlesSparseVoxelsAndRestoresInputOrder)
 {
     const Triangle local_overlap = triangle(
@@ -501,7 +726,7 @@ TEST_F(GpuIntersectionsTest, DispatchesMotionPairsAcrossMultipleWorkGroups)
     std::vector<Triangle> triangles(triangle_count, base_triangle);
 
     const auto bounds = static_motion_bounds(triangles);
-    hw3d::GpuIntersectionDetector detector{triangles, bounds};
+    GpuDetectorHarness detector{triangles, bounds};
     detector.update();
 
     for (std::size_t index = 0; index < triangles.size(); ++index) {
@@ -533,7 +758,7 @@ TEST_F(GpuIntersectionsTest, DispatchesAtAndAcrossPairWorkGroupBoundary)
         ASSERT_TRUE(candidates.pairs.has_value());
         ASSERT_EQ(candidates.pairs->size(), leaf_count);
 
-        hw3d::GpuIntersectionDetector detector{triangles, bounds};
+        GpuDetectorHarness detector{triangles, bounds};
         detector.update();
         for (std::size_t index = 0; index < triangles.size(); ++index) {
             EXPECT_TRUE(triangles[index].highlighted)

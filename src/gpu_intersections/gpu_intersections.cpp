@@ -12,27 +12,21 @@ module;
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "embedded_shaders.hpp"
 
 module hw3d.gpu_intersections;
 
-import hw3d.configuration;
 import hw3d.geometry;
+import hw3d.gpu_triangles;
 import hw3d.shader_program;
 
 namespace hw3d {
 namespace {
 
-struct alignas(16) GpuTriangle {
-    [[maybe_unused]] std::array<float, 4> a;
-    [[maybe_unused]] std::array<float, 4> b;
-    [[maybe_unused]] std::array<float, 4> c;
-    [[maybe_unused]] std::array<float, 4> min_bound;
-    [[maybe_unused]] std::array<float, 4> max_bound;
-};
-static_assert(sizeof(GpuTriangle) == 80);
 static_assert(sizeof(TrianglePair) == 8);
 
 struct alignas(16) GpuStaticEntry {
@@ -45,6 +39,15 @@ public:
     Buffer()
     {
         glCreateBuffers(1, &handle_);
+        const GLenum error = glGetError();
+        if (handle_ == 0 || error != GL_NO_ERROR) {
+            if (handle_ != 0) {
+                glDeleteBuffers(1, &handle_);
+                handle_ = 0;
+            }
+            throw std::runtime_error(
+                "failed to create GPU intersection buffer");
+        }
     }
 
     ~Buffer()
@@ -70,15 +73,8 @@ std::int32_t gpu_voxel_coordinate(const std::int64_t coordinate) noexcept
 {
     return static_cast<std::int32_t>(std::clamp(
         coordinate,
-        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()),
-        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())));
-}
-
-bool finite(const Vec3& point) noexcept
-{
-    return std::isfinite(point.x)
-        && std::isfinite(point.y)
-        && std::isfinite(point.z);
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()) + 1,
+        static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max()) - 1));
 }
 
 GLsizeiptr storage_size(
@@ -93,18 +89,59 @@ GLsizeiptr storage_size(
         std::max<std::size_t>(1, count) * element_size);
 }
 
+std::string gl_error_message(
+    const std::string_view operation,
+    const GLenum error)
+{
+    std::string reason;
+    if (error == GL_OUT_OF_MEMORY) {
+        reason = "out of GPU memory";
+    } else if (error == GL_INVALID_VALUE) {
+        reason = "invalid value";
+    } else if (error == GL_INVALID_OPERATION) {
+        reason = "invalid operation";
+    } else {
+        reason = "OpenGL error " + std::to_string(error);
+    }
+    return std::string(operation) + ": " + reason;
+}
+
+void check_gl_error(const std::string_view operation)
+{
+    const GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+        throw std::runtime_error(gl_error_message(operation, error));
+    }
+}
+
+void allocate_required_storage(
+    const Buffer& buffer,
+    const GLsizeiptr size,
+    const void* const data,
+    const GLenum usage,
+    const GLint64 maximum_storage_block_size,
+    const std::string_view label)
+{
+    if (maximum_storage_block_size <= 0
+        || size > maximum_storage_block_size) {
+        throw std::length_error(
+            std::string(label)
+            + " exceeds GL_MAX_SHADER_STORAGE_BLOCK_SIZE");
+    }
+    glNamedBufferData(buffer.handle(), size, data, usage);
+    check_gl_error(std::string("failed to allocate ") + std::string(label));
+}
+
 }
 
 class GpuIntersectionDetector::Impl final {
 public:
     Impl(
-        std::vector<Triangle>& triangles,
+        GpuTriangleBuffer& triangles,
         const std::span<const Aabb> motion_bounds,
         const std::size_t maximum_pair_count)
         : triangles_(triangles),
-          triangle_count_(triangles.size()),
-          gpu_triangles_(triangle_count_),
-          gpu_results_(triangle_count_)
+          triangle_count_(triangles.size())
     {
         if (motion_bounds.size() != triangle_count_) {
             throw std::invalid_argument(
@@ -114,11 +151,17 @@ public:
             throw std::invalid_argument(
                 "intersection pair budget exceeds the supported maximum");
         }
+        if (triangle_count_ >= static_cast<std::size_t>(
+                std::numeric_limits<std::int32_t>::max())) {
+            throw std::length_error(
+                "too many triangles for GPU intersection indices");
+        }
 
         GLint64 maximum_storage_block_size = 0;
         glGetInteger64v(
             GL_MAX_SHADER_STORAGE_BLOCK_SIZE,
             &maximum_storage_block_size);
+        check_gl_error("failed to query GPU storage-block limit");
         const std::size_t maximum_pairs_per_buffer =
             maximum_storage_block_size > 0
             ? std::min(
@@ -131,48 +174,44 @@ public:
             motion_bounds,
             maximum_pair_count);
 
-        glNamedBufferData(
-            triangle_buffer_.handle(),
-            storage_size(triangle_count_, sizeof(GpuTriangle)),
-            nullptr,
-            GL_STREAM_DRAW);
-        glNamedBufferData(
-            result_buffer_.handle(),
-            storage_size(triangle_count_, sizeof(std::int32_t)),
-            nullptr,
-            GL_STREAM_READ);
-
         if (candidates.pairs.has_value()
             && allocate_pair_buffers(
                 *candidates.pairs,
                 maximum_pairs_per_buffer)) {
             pair_mode_ = true;
             pair_count_ = candidates.pairs->size();
-            glNamedBufferData(
-                static_entry_buffer_.handle(),
+            allocate_required_storage(
+                static_entry_buffer_,
                 1,
                 nullptr,
-                GL_STATIC_DRAW);
+                GL_STATIC_DRAW,
+                maximum_storage_block_size,
+                "GPU intersection static-entry placeholder");
         } else {
-            build_fallback_entries(candidates.voxels);
-            glNamedBufferData(
-                fallback_pair_buffer_.handle(),
+            build_fallback_entries(
+                candidates.voxels,
+                maximum_storage_block_size);
+            allocate_required_storage(
+                fallback_pair_buffer_,
                 1,
                 nullptr,
-                GL_STATIC_DRAW);
+                GL_STATIC_DRAW,
+                maximum_storage_block_size,
+                "GPU intersection pair placeholder");
         }
 
         program_.emplace(ShaderProgram::compute(
             shaders::intersections_comp_glsl));
-        pair_mode_location_ = program_->uniform_location("pair_mode");
+        operation_mode_location_ = program_->uniform_location("operation_mode");
         pair_offset_location_ = program_->uniform_location("pair_offset");
-        if (pair_mode_location_ < 0 || pair_offset_location_ < 0) {
+        if (operation_mode_location_ < 0 || pair_offset_location_ < 0) {
             throw std::runtime_error(
                 "intersection compute shader uniforms are missing");
         }
 
         GLint maximum_groups = 0;
         glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &maximum_groups);
+        check_gl_error("failed to query GPU compute work-group limit");
         if (maximum_groups <= 0) {
             throw std::runtime_error(
                 "OpenGL reports no compute work groups");
@@ -182,98 +221,43 @@ public:
 
     void update()
     {
-        if (triangles_.size() != triangle_count_) {
-            throw std::logic_error(
-                "intersection detector triangle count cannot change");
-        }
-
-        const bool has_work = triangle_count_ != 0
-            && (!pair_mode_ || pair_count_ != 0);
-        for (std::size_t id = 0; id < triangle_count_; ++id) {
-            Triangle& triangle = triangles_[id];
-            if (!finite(triangle.a)
-                || !finite(triangle.b)
-                || !finite(triangle.c)) {
-                throw std::invalid_argument(
-                    "triangle coordinates must be finite");
-            }
-            triangle.highlighted = false;
-            if (!has_work) {
-                continue;
-            }
-            const Aabb bounds = aabb(triangle);
-            gpu_triangles_[id] = {
-                {triangle.a.x, triangle.a.y, triangle.a.z, 0.0F},
-                {triangle.b.x, triangle.b.y, triangle.b.z, 0.0F},
-                {triangle.c.x, triangle.c.y, triangle.c.z, 0.0F},
-                {
-                    bounds.minimum.x,
-                    bounds.minimum.y,
-                    bounds.minimum.z,
-                    0.0F,
-                },
-                {
-                    bounds.maximum.x,
-                    bounds.maximum.y,
-                    bounds.maximum.z,
-                    0.0F,
-                },
-            };
-        }
-        if (!has_work) {
+        if (triangle_count_ == 0) {
             return;
         }
 
-        glNamedBufferSubData(
-            triangle_buffer_.handle(),
-            0,
-            static_cast<GLsizeiptr>(
-                triangle_count_ * sizeof(GpuTriangle)),
-            gpu_triangles_.data());
-        glClearNamedBufferData(
-            result_buffer_.handle(),
-            GL_R32UI,
-            GL_RED_INTEGER,
-            GL_UNSIGNED_INT,
-            nullptr);
-        glBindBufferBase(
-            GL_SHADER_STORAGE_BUFFER,
-            0,
-            triangle_buffer_.handle());
-        glBindBufferBase(
-            GL_SHADER_STORAGE_BUFFER,
-            1,
-            result_buffer_.handle());
+        triangles_.bind_for_shader_storage(0);
         glBindBufferBase(
             GL_SHADER_STORAGE_BUFFER,
             3,
             static_entry_buffer_.handle());
         program_->use();
 
+        glUniform1i(operation_mode_location_, 0);
+        glUniform1ui(pair_offset_location_, 0);
+        dispatch(triangle_count_);
+        check_gl_error("failed to clear GPU intersection highlights");
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        const bool has_work = !pair_mode_ || pair_count_ != 0;
+        if (!has_work) {
+            return;
+        }
+
         if (pair_mode_) {
-            glUniform1i(pair_mode_location_, 1);
+            glUniform1i(operation_mode_location_, 1);
             dispatch_pairs();
         } else {
             glBindBufferBase(
                 GL_SHADER_STORAGE_BUFFER,
                 2,
                 fallback_pair_buffer_.handle());
-            glUniform1i(pair_mode_location_, 0);
+            glUniform1i(operation_mode_location_, 2);
             glUniform1ui(pair_offset_location_, 0);
             dispatch(triangle_count_);
         }
 
-        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-        glGetNamedBufferSubData(
-            result_buffer_.handle(),
-            0,
-            static_cast<GLsizeiptr>(
-                triangle_count_ * sizeof(std::int32_t)),
-            gpu_results_.data());
-
-        for (std::size_t index = 0; index < triangle_count_; ++index) {
-            triangles_[index].highlighted = gpu_results_[index] != 0;
-        }
+        check_gl_error("failed to dispatch GPU intersections");
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
 private:
@@ -321,7 +305,9 @@ private:
         return true;
     }
 
-    void build_fallback_entries(const std::span<const Voxel> voxels)
+    void build_fallback_entries(
+        const std::span<const Voxel> voxels,
+        const GLint64 maximum_storage_block_size)
     {
         std::vector<GpuStaticEntry> static_entries;
         static_entries.reserve(voxels.size());
@@ -342,11 +328,13 @@ private:
                     right.voxel[0], right.voxel[1], right.voxel[2],
                 };
             });
-        glNamedBufferData(
-            static_entry_buffer_.handle(),
+        allocate_required_storage(
+            static_entry_buffer_,
             storage_size(static_entries.size(), sizeof(GpuStaticEntry)),
             static_entries.empty() ? nullptr : static_entries.data(),
-            GL_STATIC_DRAW);
+            GL_STATIC_DRAW,
+            maximum_storage_block_size,
+            "GPU intersection static-entry buffer");
     }
 
     void dispatch(const std::size_t invocation_count) const
@@ -384,25 +372,21 @@ private:
         }
     }
 
-    std::vector<Triangle>& triangles_;
+    GpuTriangleBuffer& triangles_;
     std::size_t triangle_count_{};
     bool pair_mode_ = false;
     std::size_t pair_count_{};
     std::size_t maximum_group_count_{};
-    GLint pair_mode_location_ = -1;
+    GLint operation_mode_location_ = -1;
     GLint pair_offset_location_ = -1;
-    std::vector<GpuTriangle> gpu_triangles_;
-    std::vector<std::int32_t> gpu_results_;
     std::vector<PairBufferChunk> pair_buffers_;
-    Buffer triangle_buffer_;
-    Buffer result_buffer_;
     Buffer fallback_pair_buffer_;
     Buffer static_entry_buffer_;
     std::optional<ShaderProgram> program_;
 };
 
 GpuIntersectionDetector::GpuIntersectionDetector(
-    std::vector<Triangle>& triangles,
+    GpuTriangleBuffer& triangles,
     const std::span<const Aabb> motion_bounds,
     const std::size_t maximum_pair_count)
     : impl_(std::make_unique<Impl>(

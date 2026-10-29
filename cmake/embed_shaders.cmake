@@ -1,5 +1,6 @@
 if(NOT DEFINED VERTEX_SHADER OR NOT DEFINED FRAGMENT_SHADER
         OR NOT DEFINED COMPUTE_SHADER
+        OR NOT DEFINED VERTEX_UPDATE_SHADER
         OR NOT DEFINED OUTPUT_HEADER)
     message(FATAL_ERROR "Shader inputs and output header are required")
 endif()
@@ -7,7 +8,8 @@ endif()
 set(header "#pragma once\n\nnamespace hw3d::shaders {\n\n")
 
 foreach(shader_file IN ITEMS
-        "${VERTEX_SHADER}" "${FRAGMENT_SHADER}" "${COMPUTE_SHADER}")
+        "${VERTEX_SHADER}" "${FRAGMENT_SHADER}" "${COMPUTE_SHADER}"
+        "${VERTEX_UPDATE_SHADER}")
     get_filename_component(shader_name "${shader_file}" NAME)
     string(REGEX REPLACE "[^A-Za-z0-9_]" "_" symbol "${shader_name}")
     file(READ "${shader_file}" source)

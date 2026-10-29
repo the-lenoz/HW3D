@@ -163,16 +163,14 @@ CPU_CASES = (
 def gpu_cases() -> Sequence[GeometryCase]:
     cases = [
         GeometryCase(
-            "GPU falls back for degenerate point",
+            "GPU handles degenerate point",
             (BASE, point(0.5, 0.5, 0)),
             (True, True),
-            "warning: GPU intersections require non-degenerate triangles; falling back to CPU\n",
         ),
         GeometryCase(
-            "GPU falls back once for multiple degenerate triangles",
+            "GPU handles multiple degenerate triangles",
             (BASE, point(0.5, 0.5, 0), segment((0, 0, 0), (1, 0, 0))),
             (True, True, True),
-            "warning: GPU intersections require non-degenerate triangles; falling back to CPU\n",
         ),
     ]
     for count in (63, 64, 65, 127, 128, 129):

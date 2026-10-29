@@ -11,7 +11,7 @@ HW3D читает набор треугольников в трёхмерном 
 - на CPU;
 - на GPU с помощью GLSL compute shader.
 
-Оба способа записывают одинаковый по смыслу результат в поле `Triangle::highlighted`: `false` означает, что треугольник не пересекается ни с одним другим, а `true` — что пересекается хотя бы с одним.
+Оба способа формируют одинаковый по смыслу результат `highlighted`: `false` означает, что треугольник не пересекается ни с одним другим, а `true` — что пересекается хотя бы с одним. CPU хранит его в `Triangle::highlighted`, GPU — в соответствующем поле общего runtime-SSBO; явный `download()` переводит GPU-запись обратно в `Triangle` для headless-вывода и тестов.
 
 ## Текущее состояние
 
@@ -20,7 +20,7 @@ HW3D читает набор треугольников в трёхмерном 
 Реализовано:
 
 - сборка приложения и тестов через CMake и Ninja;
-- семь C++-модулей, подключённых к цели `hw3d`;
+- восемь C++-модулей, подключённых к цели `hw3d`;
 - чтение и проверка входных данных в `hw3d.configuration`;
 - чтение длительности симуляции, оси и угловой скорости каждого треугольника;
 - разделение неизменяемых входных `InitialTriangle` и runtime-`Triangle`;
@@ -33,8 +33,10 @@ HW3D читает набор треугольников в трёхмерном 
 - цикл событий и кадров, завершающийся по длительности симуляции, `Esc` или закрытию окна;
 - передача состояния стрелок, накопленного движения мыши и времени кадра одним обработчиком;
 - импорт и связывание существующих модулей в `main.cpp`;
-- покадровая запись живого массива треугольников в mapped renderer SSBO;
-- встраивание двух renderer shaders и compute shader в C++-заголовок при конфигурации и сборке;
+- общий GPU runtime-SSBO, который без промежуточных копий последовательно используют compute-поворот, compute-пересечения и renderer;
+- отдельный GPU-модуль для одноразовой загрузки конфигурации, абсолютного compute-поворота и явных test/headless upload/download;
+- CPU-renderer с внутренним runtime-SSBO и GPU-renderer, заимствующий общий буфер;
+- встраивание двух renderer shaders и двух compute shaders в C++-заголовок при конфигурации и сборке;
 - общий модуль `hw3d.shader_program` для компиляции, линковки и владения OpenGL-программами;
 - компиляция vertex/fragment shaders, серая окраска обычных и красная окраска отмеченных треугольников;
 - матовое Lambert-освещение от параллельного источника сверху со слабым ambient;
@@ -42,8 +44,8 @@ HW3D читает набор треугольников в трёхмерном 
 - perspective camera с захватом мыши, yaw/pitch-вращением и creative-flight перемещением;
 - динамические near/far clipping planes, следующие за положением камеры относительно сцены;
 - поиск пересечений треугольников на CPU по предвычисленным motion-AABB парам, с voxel fallback для слишком плотных сцен, текущим AABB broad phase и adaptive exact-predicate narrow phase;
-- отдельные GoogleTest-наборы для всех семи модулей;
-- поиск пересечений невырожденных треугольников на GPU по SSBO предвычисленных motion-AABB пар, с voxel fallback для слишком плотных сцен и SAT narrow phase, а также CPU fallback для вырожденных входов;
+- отдельные GoogleTest-наборы для всех восьми модулей;
+- поиск пересечений точек, отрезков и невырожденных треугольников на GPU по общему runtime-SSBO и SSBO предвычисленных motion-AABB пар, с voxel fallback для слишком плотных сцен и `double`-геометрией на разностях координат;
 - выбор CPU- или GPU-backend флагом `--use-gpu-intersections`;
 - headless-режим с печатью отметок пересечений вместо запуска renderer;
 - динамический заголовок видимого окна с FPS и средним временем кадра;
@@ -51,11 +53,9 @@ HW3D читает набор треугольников в трёхмерном 
 
 Пока не реализовано:
 
-- настраиваемые материалы и несколько источников света;
-- полноценная обработка вырожденных треугольников непосредственно внутри GPU shader;
-- scale-robust GPU narrow phase для экстремально малых невырожденных треугольников, чьи float-нормали или квадраты их длин underflow до нуля.
+- настраиваемые материалы и несколько источников света.
 
-CPU-модуль реализован и используется по умолчанию. При флаге `--use-gpu-intersections` приложение сначала проверяет вход exact-предикатом `hw3d::is_degenerate`. Если найден хотя бы один вырожденный треугольник, приложение печатает в `stderr` ровно одно предупреждение `warning: GPU intersections require non-degenerate triangles; falling back to CPU` и выбирает CPU-backend. GPU shader получает только exact-невырожденные входные треугольники, но его float SAT имеет отдельное ограничение масштаба: при экстремально малых рёбрах нормаль или `dot(normal, normal)` может underflow до нуля. Для таких данных гарантированную семантику предоставляет CPU backend; безусловная эквивалентность CPU/GPU заявляется только вне этой численной области.
+CPU-модуль реализован и используется по умолчанию. При флаге `--use-gpu-intersections` приложение создаёт общий `GpuTriangleBuffer`, один раз загружает immutable-конфигурацию и выполняет каждый оконный кадр полностью на GPU: абсолютное время передаётся rotation compute shader, intersections compute shader атомарно выставляет отметки в том же буфере, а vertex/fragment shaders сразу его рисуют. Предварительного запрета вырожденных треугольников и предупреждения нет. Intersections shader сам классифицирует каждый текущий вход как point, segment или triangle и выполняет топологические проверки в `double`; ориентирующие предикаты сначала переходят к разностям координат. Это исключает `float` underflow/overflow и снижает зависимость от большого мирового смещения. Reliability-readback и exact CPU fallback отсутствуют: для намеренно численно неоднозначных determinant GPU-результат может отличаться от adaptive exact CPU-backend.
 
 ## Структура репозитория
 
@@ -75,6 +75,7 @@ HW3D/
 │   ├── window_context_tests.cpp
 │   ├── shader_program_tests.cpp
 │   ├── renderer_tests.cpp
+│   ├── gpu_triangles_tests.cpp
 │   ├── cpu_intersections_tests.cpp
 │   ├── gpu_intersections_tests.cpp
 │   ├── headless_e2e.py
@@ -96,6 +97,11 @@ HW3D/
     ├── shader_program/
     │   ├── shader_program.cppm
     │   └── shader_program.cpp
+    ├── gpu_triangles/
+    │   ├── gpu_triangles.cppm
+    │   ├── gpu_triangles.cpp
+    │   └── shaders/
+    │       └── update_vertices.comp.glsl
     ├── renderer/
     │   ├── renderer.cppm
     │   ├── renderer.cpp
@@ -122,9 +128,9 @@ HW3D/
 
 GLAD 2.0.8 подключается только через CMake `FetchContent` из официального репозитория. После `FetchContent_MakeAvailable` подключается официальный CMake helper и создаётся статическая цель `hw3d_glad` для `gl:core=4.6` без extensions. Сгенерированные GLAD-файлы находятся только внутри build-каталога и не хранятся в исходном дереве. Первичная конфигурация требует Git, Python interpreter и доступ к GitHub; `REPRODUCIBLE` запрещает генератору скачивать актуальную Khronos specification поверх зафиксированной версии зависимости.
 
-Цель `hw3d_modules` связывается с `hw3d_glad`, `glfw` и `OpenGL::GL`. Если `${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_shaders.hpp` ещё отсутствует, CMake создаёт его уже при конфигурации, чтобы IDE могла индексировать потребителей до первой сборки. При изменении любого из трёх GLSL-файлов или скрипта сборка повторно запускает `cmake/embed_shaders.cmake` и пересобирает затронутых потребителей. Заголовок содержит строки `hw3d::shaders::triangle_vert_glsl`, `hw3d::shaders::triangle_frag_glsl` и `hw3d::shaders::intersections_comp_glsl`; имена образуются заменой точек в именах файлов на подчёркивания. Заголовок остаётся внутри build-каталога; renderer и GPU-тест не ищут GLSL-файлы при запуске.
+Цель `hw3d_modules` связывается с `hw3d_glad`, `glfw` и `OpenGL::GL`. Если `${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_shaders.hpp` ещё отсутствует, CMake создаёт его уже при конфигурации, чтобы IDE могла индексировать потребителей до первой сборки. При изменении любого из четырёх GLSL-файлов или скрипта сборка повторно запускает `cmake/embed_shaders.cmake` и пересобирает затронутых потребителей. Заголовок содержит строки `hw3d::shaders::triangle_vert_glsl`, `hw3d::shaders::triangle_frag_glsl`, `hw3d::shaders::update_vertices_comp_glsl` и `hw3d::shaders::intersections_comp_glsl`; имена образуются заменой точек в именах файлов на подчёркивания. Заголовок остаётся внутри build-каталога; renderer и GPU-тесты не ищут GLSL-файлы при запуске.
 
-При `BUILD_TESTING=ON` — это стандартное значение CTest — CMake получает GoogleTest 1.17.0 через `FetchContent` из официального репозитория и строит восемь независимых test executables. Каждый из них связывается с `hw3d_modules` и `GTest::gtest_main`. GL-тесты дополнительно связываются с `hw3d_glad`, выполняются последовательно и запускаются с отключённой переменной `WAYLAND_DISPLAY`: это выбирает стабильный для повторной инициализации GLFW X11 backend. Если во время конфигурации `DISPLAY` отсутствует, а `xvfb-run` найден, CTest автоматически оборачивает каждый GL-тест в отдельный Xvfb server.
+При `BUILD_TESTING=ON` — это стандартное значение CTest — CMake получает GoogleTest 1.17.0 через `FetchContent` из официального репозитория и строит девять независимых test executables. Каждый из них связывается с `hw3d_modules` и `GTest::gtest_main`. GL-тесты дополнительно связываются с `hw3d_glad`, выполняются последовательно и запускаются с отключённой переменной `WAYLAND_DISPLAY`: это выбирает стабильный для повторной инициализации GLFW X11 backend. Если во время конфигурации `DISPLAY` отсутствует, а `xvfb-run` найден, CTest автоматически оборачивает каждый GL-тест в отдельный Xvfb server.
 
 Кроме GoogleTest-наборов CMake находит Python interpreter и регистрирует пять process e2e-тестов. `headless_cpu_e2e` удаляет `DISPLAY` и `WAYLAND_DISPLAY`, запускает настоящий `hw3d` с `--headless` и не требует графической системы. `headless_gpu_e2e` использует тот же бинарный файл с compute backend. `windowed_cpu_e2e` и `windowed_gpu_e2e` проверяют вращение, создание renderer и автоматическое завершение по длительности. `generate_triangles_e2e` проверяет CLI генератора и передаёт его результат настоящему CPU headless binary. GL-сценарии выполняются последовательно и при отсутствии `DISPLAY` оборачиваются в Xvfb. Unit- и e2e-наборы помечены CTest labels `unit` и `e2e`. GoogleTest и все e2e-тесты можно исключить из сборки через `-DBUILD_TESTING=OFF`.
 
@@ -181,66 +187,44 @@ ctest --preset debug -L e2e
 
 ## Общий механизм работы системы
 
-Текущий поток управления в оконном режиме:
+CPU-ветка оконного режима использует следующий поток:
 
 ```text
-stdin -> Configuration
-      -> update_vertices создаёт runtime-массив Triangle для t = 0
-      -> calculate_motion_bounds один раз создаёт массив AABB полного движения
-      -> preflight is_degenerate при запросе GPU
-      -> WindowContext создаёт окно, активный GL context и загружает GLAD
-      -> выбранный detector один раз создаёт список motion-AABB пар либо voxel fallback и рабочие буферы
-      -> Renderer хранит ссылку на triangles, создаёт VAO/SSBO и через ShaderProgram компилирует встроенные shaders
-      -> main передаёт WindowContext один C++-обработчик кадра
-      -> WindowContext::run собирает FrameInput после обработки событий
-      -> update_vertices пересчитывает текущие вершины по абсолютному времени
-      -> detector.update обновляет Triangle::highlighted текущего кадра
-      -> main применяет mouse offsets и стрелки к камере, затем вызывает Renderer::render
-      -> Renderer синхронизирует SSBO из того же vector и рисует Lambert-lit заполнение с каймой
-      -> simulation_duration, Esc или закрытие окна завершает цикл
-      -> RAII освобождает detector и renderer до окна и GLFW
+Configuration -> vector<Triangle> -> update_vertices(elapsed)
+              -> CpuIntersectionDetector::update()
+              -> Renderer загружает свой GpuTriangleBuffer и рисует
 ```
 
-В `--headless`-режиме CPU backend не создаёт `WindowContext`: результат сразу печатается в `stdout` как разделённые пробелами `0` и `1`. GPU backend с полностью невырожденным входом перед вычислением создаёт невидимый context `1 x 1`, но также не создаёт renderer и не запускает event loop. GPU-запрос с вырожденным входом выполняет preflight до создания контекста и сразу использует CPU без GLFW/OpenGL.
-
-Текущий поток данных с взаимозаменяемыми backend:
+GPU-ветка после одноразовой подготовки не возвращает runtime-геометрию на CPU:
 
 ```text
-stdin
-  -> hw3d.configuration
-  -> Configuration::simulation_duration и vector<InitialTriangle>
-  -> hw3d.geometry::update_vertices(t = 0)
-  -> preallocated vector<Triangle>
-  -> hw3d.geometry::calculate_motion_bounds
-  -> immutable vector<Aabb>
-  -> preflight is_degenerate при запросе GPU
-  -> persistent CpuIntersectionDetector или GpuIntersectionDetector
-  -> runtime-треугольники с обновлённым полем highlighted
-    -> headless: stdout
-    -> оконный режим: hw3d.renderer
-       -> окно и OpenGL-контекст из hw3d.window_context
+Configuration --однократно--> GpuVertexUpdater immutable SSBO
+elapsed time ----------------> rotation compute
+                               -> общий GpuTriangleBuffer
+                               -> intersections clear/pair-or-voxel compute
+                               -> vertex/fragment shaders
 ```
 
-В оконном режиме `main` накапливает ограниченные значения `FrameInput::delta_seconds`, зажимает абсолютное симуляционное время значением `simulation_duration` и перед каждым `detector.update()` вызывает `update_vertices`. Конечное состояние точно соответствует длительности, отрисовывается один раз, после чего окно получает запрос на закрытие. Headless-режим вычисляет только состояние `t = 0`. Параметры оси и скорости остаются только в `InitialTriangle`; рассчитанные один раз `motion_bounds` используются detector и renderer.
+В обеих ветках `calculate_motion_bounds` один раз создаёт immutable-массив AABB полного движения, а detector один раз строит список motion-AABB пар либо статический voxel fallback. `WindowContext` создаёт OpenGL context, собирает `FrameInput` и вызывает один C++-обработчик кадра. `main` накапливает ограниченные значения `delta_seconds`, зажимает абсолютное время значением `simulation_duration`, применяет управление камерой и после отрисовки точного конечного состояния запрашивает закрытие окна. GPU-кадр вызывает `GpuVertexUpdater::update()`, `GpuIntersectionDetector::update()` и `Renderer::render()` над одним runtime-SSBO; между ними используются shader-storage barriers, но CPU-копирования геометрии или flags нет.
+
+В `--headless`-режиме CPU backend не создаёт `WindowContext`: runtime-вектор вычисляется для `t = 0`, detector выставляет flags, и результат печатается в `stdout`. GPU backend создаёт невидимый context `1 x 1`, выполняет тот же rotation/intersections pipeline при `t = 0`, один раз вызывает `GpuTriangleBuffer::download()` для печати и не создаёт renderer/event loop. Вырожденные примитивы обрабатываются shader. Численно неоднозначные `double`-предикаты не запускают CPU fallback.
 
 `main.cpp` является composition root: он должен связывать модули, выбирать вычислительный backend, передавать данные между ними и сопоставлять состояние ввода с методами renderer. Алгоритмы геометрии, детали OpenGL и работа GLFW не должны реализовываться в `main.cpp`.
 
 Жизненный цикл оконного режима:
 
-1. прочитать конфигурацию из `stdin`;
-2. один раз выделить runtime-вектор и заполнить его через `update_vertices` для `t = 0`;
-3. один раз выделить и заполнить массив `motion_bounds` в том же индексном порядке;
-4. выполнить GPU preflight через `hw3d::is_degenerate`;
-5. создать окно и активный OpenGL-контекст;
-6. создать выбранный detector и renderer с невладеющими ссылками на runtime-вектор и готовые границы;
-7. передать окну обработчик кадра;
-8. каждый кадр обновлять абсолютное время и вершины, вызывать `detector.update()`, применять ввод и вызывать renderer;
-9. после отрисовки конечного состояния запросить закрытие окна;
-10. освободить detector и renderer до уничтожения контекста.
+1. прочитать конфигурацию из `stdin` и один раз вычислить `motion_bounds` в том же ID-порядке;
+2. создать окно и активный OpenGL-контекст;
+3. для CPU-ветки создать runtime-вектор, CPU detector и renderer с собственным GPU-буфером;
+4. для GPU-ветки создать общий `GpuTriangleBuffer`, `GpuVertexUpdater`, GPU detector и renderer, заимствующий этот буфер;
+5. передать окну обработчик кадра;
+6. каждый кадр обновлять абсолютное время и runtime-вершины выбранным CPU/GPU updater, запускать detector, применять ввод и вызывать renderer;
+7. после отрисовки конечного состояния запросить закрытие окна;
+8. освободить GPU updater, detector и renderer до уничтожения контекста; общий буфер обязан жить дольше заимствующих его объектов.
 
 Во всех режимах CLI разбирается до чтения конфигурации, а конфигурация читается до создания окна. Флаги `--headless` и `--use-gpu-intersections` разрешены в любом порядке и не должны повторяться; неизвестный или повторный флаг завершает процесс с диагностикой и кодом `1`.
 
-CPU- и GPU-модули должны соблюдать единый контракт результата. Renderer не должен знать, каким способом получены отметки. Вычислительные модули не должны зависеть от окна, камеры или логики отрисовки.
+CPU- и GPU-модули должны соблюдать единый логический контракт результата и стабильный исходный ID-порядок. Renderer выбирает только источник runtime-буфера — собственный CPU-upload buffer или заимствованный GPU buffer — и не определяет пересечения. Вычислительные модули не должны зависеть от окна, камеры или логики отрисовки.
 
 ## Формат входных данных
 
@@ -489,17 +473,53 @@ public:
 
 Фабрики компилируют указанные стадии, линкуют программу и удаляют промежуточные shader objects. При ошибке освобождаются уже созданные объекты; исключение содержит название стадии либо сообщение о линковке и журнал драйвера. Деструктор удаляет программу. Для всех вызовов и уничтожения нужен активный OpenGL-контекст и загруженный GLAD. Модуль не зависит от окна, renderer или алгоритма пересечений и не управляет uniforms, рисованием, compute dispatch, буферами или барьерами.
 
+### `hw3d.gpu_triangles`
+
+Файлы: `src/gpu_triangles/gpu_triangles.cppm`, `src/gpu_triangles/gpu_triangles.cpp` и `src/gpu_triangles/shaders/update_vertices.comp.glsl`.
+
+Модуль импортирует конфигурацию и геометрию, скрывает OpenGL-типы за PImpl и экспортирует общий runtime-буфер и persistent updater:
+
+```cpp
+class GpuTriangleBuffer final {
+public:
+    explicit GpuTriangleBuffer(std::size_t triangle_count);
+    ~GpuTriangleBuffer();
+    [[nodiscard]] std::size_t size() const noexcept;
+    void bind_for_shader_storage(std::uint32_t binding) const;
+    void upload(std::span<const Triangle> triangles);
+    void download(std::span<Triangle> triangles) const;
+};
+
+class GpuVertexUpdater final {
+public:
+    GpuVertexUpdater(
+        std::span<const InitialTriangle> initial,
+        GpuTriangleBuffer& current);
+    ~GpuVertexUpdater();
+    void update(std::chrono::duration<double> elapsed);
+};
+```
+
+`GpuTriangleBuffer` владеет SSBO фиксированного размера и допускает пустую сцену. Размер нельзя менять после constructor. Один runtime-record занимает 80 байт: `uvec4` хранит биты `a.xyz` и атомарный `uint highlighted`, затем идут padded `b`, `c`, текущие minimum и maximum AABB. `upload()` и `download()` требуют span того же размера; upload проверяет конечность координат и вычисляет AABB, download восстанавливает `Triangle` и переводит ненулевой flag в `true`. Эти операции предназначены для CPU-renderer, headless-вывода и тестов; обычный оконный GPU-кадр их не вызывает.
+
+`GpuVertexUpdater` сохраняет невладеющую ссылку на runtime-буфер, один раз загружает пять `vec4` каждого `InitialTriangle` в immutable configuration SSBO и компилирует rotation compute shader. Размеры должны совпадать. `update()` принимает конечное неотрицательное абсолютное время, передаёт только `elapsed_seconds`, dispatch-ит work groups по 64 записи и после них ставит `GL_SHADER_STORAGE_BARRIER_BIT`. Shader нормализует ось в `double`, сокращает угол по полному обороту относительно абсолютного времени, получает синус и косинус встроенными `float`-функциями и применяет формулу Родрига в `double`; затем записывает вершины, текущий AABB и нулевой highlight. Нулевая скорость и нулевой угол точно копируют исходные `float`. Поэтому повторные вызовы не накапливают ошибку и не зависят от предыдущего runtime-состояния.
+
+Constructor, transfer-операции, bind, update и destructors требуют активный OpenGL 4.6 context. Все заимствующие `GpuTriangleBuffer` объекты должны быть уничтожены до него.
+
 ### `hw3d.renderer`
 
 Файлы: `src/renderer/renderer.cppm` и `src/renderer/renderer.cpp`.
 
-Модуль импортирует `hw3d.geometry` и `hw3d.shader_program`, скрывает OpenGL-типы за PImpl и экспортирует следующий основной API:
+Модуль импортирует `hw3d.geometry`, `hw3d.gpu_triangles` и `hw3d.shader_program`, скрывает OpenGL-типы за PImpl и экспортирует следующий основной API:
 
 ```cpp
 class Renderer final {
 public:
     Renderer(
         std::span<const Triangle> triangles,
+        std::span<const Aabb> motion_bounds);
+    Renderer(
+        const GpuTriangleBuffer& triangles,
         std::span<const Aabb> motion_bounds);
     ~Renderer();
 
@@ -516,30 +536,29 @@ public:
 
 Renderer не импортирует `hw3d.window_context`: сопоставление `FrameInput` с методами камеры выполняет `main.cpp`.
 
-Constructor не принимает `Configuration`: его контракт состоит из span текущих треугольников и готовых `motion_bounds` того же размера. Он требует существующий активный OpenGL context и загруженный GLAD, отклоняет пустой или несогласованный массив и некорректные границы через `std::invalid_argument` и сохраняет невладеющий `std::span<const Triangle>`. Исходное хранилище, его адрес и размер обязаны оставаться неизменными весь срок жизни renderer; менять сами элементы разрешено. `resize`, `reserve`, `swap` и любая другая операция, инвалидирующая span, запрещены и renderer не может обнаружить такое нарушение. Границы нужны только constructor для настройки камеры и не сохраняются.
+Оба constructor требуют активный OpenGL context, непустой источник и `motion_bounds` того же размера. CPU-вариант сохраняет невладеющий `std::span<const Triangle>` и владеет внутренним `GpuTriangleBuffer`; адрес и размер исходного storage должны оставаться неизменными, а элементы можно обновлять. GPU-вариант не владеет переданным `GpuTriangleBuffer`, не выполняет transfer и требует, чтобы буфер жил дольше renderer. Границы нужны только для настройки камеры и не сохраняются.
 
 При подготовке данных constructor:
 
 - создаёт пустой VAO, необходимый OpenGL Core для `glDrawArrays` без vertex attributes;
-- создаёт SSBO размера `64 * triangle_count` байт с usage `GL_STREAM_DRAW`;
+- для CPU-варианта создаёт общий-format runtime SSBO через `GpuTriangleBuffer`, а для GPU-варианта заимствует готовый;
 - создаёт `ShaderProgram` из встроенных в заголовок vertex/fragment shaders;
 - сообщает ошибки компиляции, линковки и отсутствующий uniform через исключения;
 - включает depth test с функцией сравнения `GL_LESS`;
 - объединяет переданные `motion_bounds`, вычисляет охватывающую сферу полного движения, ставит камеру по центру перед сценой и выбирает scale-dependent шаг движения; `motion_aabb` renderer не вызывает.
 
-Каждый `render()` сначала проверяет viewport и при нулевой ширине или высоте возвращается без map, вычисления нормалей и очистки framebuffer. Иначе он отображает весь SSBO через `glMapNamedBufferRange` с `GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT`, записывает актуальные данные из исходного span непосредственно в mapped storage и выполняет unmap. Одна GPU-запись содержит четыре `vec4`: позиции `a/b/c`, highlight в `a.w` и одну плоскую unit normal; для вырожденной или нечисловой нормали используется `(0, 1, 0)`. Ошибка map/unmap сообщается `std::runtime_error`. Промежуточного `std::vector<float>` и трёхкратного дублирования normal/highlight нет.
+Каждый `render()` сначала проверяет viewport и при нулевой ширине или высоте возвращается без upload и очистки framebuffer. Иначе CPU-вариант вызывает `GpuTriangleBuffer::upload()` для актуального span, а GPU-вариант сразу использует заимствованный buffer. Нормаль в runtime-record не хранится и на CPU не вычисляется.
 
-После синхронизации `render()` очищает color/depth buffers, динамически рассчитывает near/far clipping planes, строит perspective matrix с вертикальным FOV `60°`, строит look-at view matrix из позиции и направления камеры, записывает `view_projection` uniform, заново привязывает renderer SSBO к binding `0` и вызывает `glDrawArrays(GL_TRIANGLES, ...)`. Повторное связывание обязательно, поскольку GPU collision backend использует тот же binding для собственного SSBO. Near/far рассчитываются по расстоянию от камеры до центра охватывающей сцену сферы: радиус берётся с запасом `10%`, а near всегда положителен и не меньше `max(0.001 * radius, 0.0001)`. Поэтому полная траектория сцены остаётся внутри depth range, а при большом удалении near также растёт и не теряет без необходимости точность depth buffer. Собственная векторно-матричная математика использует `float` и column-major layout OpenGL; внешняя math-библиотека пока не нужна.
+После этого `render()` очищает color/depth buffers, динамически рассчитывает near/far clipping planes, строит perspective и look-at matrices, записывает `view_projection` uniform, привязывает выбранный runtime-буфер к binding `0` и вызывает `glDrawArrays(GL_TRIANGLES, ...)`. Повторное связывание обязательно, поскольку intersections shader использует тот же binding. Near/far рассчитываются по расстоянию от камеры до центра охватывающей сцену сферы: радиус берётся с запасом `10%`, а near всегда положителен и не меньше `max(0.001 * radius, 0.0001)`. Поэтому полная траектория сцены остаётся внутри depth range, а при большом удалении near также растёт и не теряет без необходимости точность depth buffer. Собственная векторно-матричная математика использует `float` и column-major layout OpenGL; внешняя math-библиотека пока не нужна.
 
 Камера начинает с yaw `-90°`, pitch `0°` и смотрит вдоль отрицательной оси Z. Mouse offsets изменяют yaw/pitch с чувствительностью `0.002` радиана на pixel; pitch ограничен диапазоном примерно `[-89°, 89°]`. Forward/back movement идёт вдоль полного направления взгляда, включая вертикальную составляющую: при взгляде вверх движение вперёд поднимает камеру как в creative flight. Left/right используют горизонтальный right vector. Скорость равна `1.5` радиуса сцены в секунду и умножается на переданный `delta_seconds`.
 
-Vertex shader получает индекс треугольника и локальный индекс вершины из `gl_VertexID`, читает одну запись SSBO, выбирает `a/b/c` и формирует barycentric coordinates без хранения их в памяти. Затем он применяет `view_projection` и передаёт highlight flag и плоскую normal. Fragment shader выбирает базовый цвет: серый `(0.55, 0.55, 0.55)` при `false` или красный `(0.85, 0.08, 0.08)` при `true`. Затем он применяет двухстороннее по отношению к видимой грани матовое Lambert-освещение. Направление от поверхности к параллельному источнику задаётся world-space вектором `normalize((-0.35, 1.0, 0.45))`: положительная Y-компонента размещает источник сверху, а X/Z-компоненты не оставляют все вертикальные поверхности только на ambient. Интенсивность равна `0.15 + 0.85 * max(dot(normal, direction_to_light), 0)`. Specular-слагаемого нет, поэтому материал не создаёт глянцевых бликов. Минимальная barycentric coordinate и `fwidth` формируют поверх результата сглаженную нелитую чёрную кайму толщиной примерно `1.5` pixel по всем трём рёбрам.
+Vertex shader получает индекс треугольника и локальный индекс вершины из `gl_VertexID`, декодирует `a/b/c` и целочисленный highlight из общего 80-байтового record, вычисляет плоскую normal через cross product и использует fallback `(0, 1, 0)` для вырожденного или нечислового результата. Затем он применяет `view_projection` и формирует barycentric coordinates. Fragment shader выбирает базовый цвет: серый `(0.55, 0.55, 0.55)` при нулевом flag или красный `(0.85, 0.08, 0.08)` при ненулевом. Затем он применяет двухстороннее по отношению к видимой грани матовое Lambert-освещение. Направление от поверхности к параллельному источнику задаётся world-space вектором `normalize((-0.35, 1.0, 0.45))`: положительная Y-компонента размещает источник сверху, а X/Z-компоненты не оставляют все вертикальные поверхности только на ambient. Интенсивность равна `0.15 + 0.85 * max(dot(normal, direction_to_light), 0)`. Specular-слагаемого нет, поэтому материал не создаёт глянцевых бликов. Минимальная barycentric coordinate и `fwidth` формируют поверх результата сглаженную нелитую чёрную кайму толщиной примерно `1.5` pixel по всем трём рёбрам.
 
 Целевая ответственность:
 
 - создание и удаление OpenGL-ресурсов визуализации;
-- загрузка геометрии треугольников в GPU buffers;
-- хранение или обновление буфера отметок пересечений;
+- загрузка CPU-геометрии во внутренний runtime-буфер либо заимствование общего GPU-буфера;
 - отрисовка обычных треугольников серым цветом;
 - отрисовка отмеченных треугольников красным цветом;
 - применение матриц модели, вида и проекции;
@@ -609,7 +628,7 @@ Narrow phase пары:
 class GpuIntersectionDetector final {
 public:
     GpuIntersectionDetector(
-        std::vector<Triangle>& triangles,
+        GpuTriangleBuffer& triangles,
         std::span<const Aabb> motion_bounds,
         std::size_t maximum_pair_count =
             maximum_cached_triangle_pair_count);
@@ -620,28 +639,29 @@ public:
 };
 ```
 
-Constructor, `update()` и destructor требуют активный OpenGL context. Constructor сохраняет невладеющую ссылку на объект `std::vector`, проверяет совпадение размеров, корректность motion bounds и pair-бюджет не выше общего максимума, один раз компилирует compute program, создаёт buffers и заранее выделяет CPU staging/result arrays. Необязательный бюджет по умолчанию равен 256 миллионам пар и может быть уменьшен для раннего выбора fallback. Вектор обязан жить дольше detector и не менять размер.
+Constructor, `update()` и destructor требуют активный OpenGL context. Constructor сохраняет невладеющую ссылку на `GpuTriangleBuffer`, проверяет совпадение размеров, корректность границ, 31-битную вместимость GPU array length и pair-бюджет не выше общего максимума. Он запрашивает `GL_MAX_SHADER_STORAGE_BLOCK_SIZE`, проверяет обязательные cache-SSBO, один раз компилирует compute program и строит неизменяемый pair cache либо voxel fallback. Необязательный бюджет по умолчанию равен 256 миллионам пар и может быть уменьшен для раннего выбора voxel fallback. Общий runtime-буфер обязан жить дольше detector.
 
 Подготовка и выполнение устроены следующим образом:
 
 1. Constructor запрашивает общий список максимум из выбранного числа motion-AABB пар, не превышающего `256'000'000`. Значение `GL_MAX_SHADER_STORAGE_BLOCK_SIZE` ограничивает размер одного pair SSBO, но не общий кэш.
-2. Каждая GPU-запись текущей геометрии занимает 80 байт: три padded `vec3` и padded minimum/maximum AABB. Записи хранятся в исходном ID-порядке.
+2. Binding `0` получает общий 80-байтовый runtime-record из `GpuTriangleBuffer`; отдельного geometry/result storage у detector нет. Записи хранятся в исходном ID-порядке.
 3. В быстром режиме binding `2` последовательно получает один или несколько неизменяемых SSBO из `uvec2` пар. Каждый SSBO не превышает лимит драйвера, один invocation обрабатывает одну пару, а буферы больше одного допустимого dispatch дополнительно разбиваются на порции через uniform `pair_offset`.
-4. Если полный список не помещается либо хотя бы один pair SSBO получает `GL_OUT_OF_MEMORY`, constructor освобождает уже созданные pair buffers, сортирует отдельный binding `3` из `ivec4(static voxel, original ID)` и включает voxel fallback. В нём invocation обрабатывает одну отсортированную запись, перебирает 27 ячеек и находит bucket 22-шаговым binary search с `GL_ARB_shader_group_vote`.
-5. Binding `0` содержит текущую геометрию, а binding `1` — выходные flags. `update()` обновляет geometry buffer через `glNamedBufferSubData` и очищает result buffer без пересоздания объектов.
-6. В обоих режимах сначала выполняется inclusive AABB-проверка, затем SAT по 17 осям: две нормали треугольников, девять cross products рёбер и шесть лежащих в плоскостях нормалей к рёбрам. Inclusive overlap проекций считает касание пересечением.
-7. При пересечении `atomicOr` выставляет flags обоих исходных индексов. После dispatch C++ выполняет memory barrier и одним `glGetNamedBufferSubData` читает результат в заранее выделенный массив, затем переносит flags в runtime-треугольники.
+4. Если полный список не помещается либо хотя бы один pair SSBO получает `GL_OUT_OF_MEMORY`, constructor освобождает уже созданные pair buffers, сортирует отдельный binding `3` из `ivec4(static voxel, original ID)` и включает voxel fallback. В нём invocation обрабатывает одну отсортированную запись, перебирает 27 ячеек и находит начало bucket обычным binary search без фиксированного числа шагов и без shader-group extensions. GPU voxel coordinates насыщаются до `int32_t` с запасом единицы для безопасного прибавления neighbor offsets.
+5. Каждый `update()` сначала dispatch-ит mode `clear`, который обнуляет interleaved `highlighted` у всех записей, и ставит shader-storage barrier. Затем pair- или voxel-dispatch читает вершины и текущие AABB из тех же records.
+6. В обоих режимах сначала выполняется inclusive AABB-проверка. Затем вершины пары точно расширяются из исходных `float` в `double`, а каждый ориентирующий предикат строится на разностях относительно одной из своих точек. Shader классифицирует каждый объект как point, segment или triangle и выполняет те же комбинации point/segment/triangle, inclusive edge/vertex/coplanar проверки и двусторонний обход рёбер, что CPU narrow phase. Поэтому extreme-small и extreme-large конечные `float` не теряются из-за underflow/overflow промежуточной геометрии, а общий мировой перенос сокращается до вычисления determinant.
+7. GPU `orient2d` и `orient3d` вычисляют determinant во встроенном `double` на разностях координат. Error-bound сигнализации, reliability flag и exact expansions внутри shader нет; численно неоднозначный знак может отличаться от CPU adaptive predicate.
+8. При найденном пересечении `atomicOr` непосредственно выставляет `a_and_highlight.w` обоих исходных индексов. После всех dispatch C++ выполняет `GL_SHADER_STORAGE_BARRIER_BIT`, чтобы результат был видим последующему vertex shader или явному download.
 
-Каждый `update()` одним CPU-проходом проверяет неизменность размера и конечность текущих координат, очищает `highlighted` и при наличии работы заполняет geometry staging. Пустой вход и быстрый режим с пустым списком пар обрабатываются без заполнения staging, загрузки SSBO и dispatch. Между кадрами сохраняются программа, GL buffers, pair cache либо статический sorted voxel-order и CPU geometry/result arrays; временный CPU-массив отсортированных fallback entries освобождается сразу после загрузки в SSBO. Сортировка и динамические аллокации не повторяются.
+`update()` не выполняет CPU staging, readback или динамических аллокаций и не перестраивает cache. Пустой buffer возвращается сразу; пустой pair-cache выполняет только clear-dispatch. Между кадрами сохраняются программа, pair SSBO либо static sorted voxel-order. Временный CPU-массив fallback entries освобождается после одноразовой загрузки.
 
-До запуска GPU shader `main.cpp` проверяет каждый вход exact-предикатом `hw3d::is_degenerate`. Если найден point или segment, задаваемый вырожденным треугольником, GPU не запускается: печатается одно предупреждение в `stderr`, а результат вычисляет CPU-backend. Для прошедших preflight невырожденных треугольников SAT использует проверку `dot(normal, normal) > 0.0`, без абсолютного порога площади. Однако вычисление остаётся во `float`: у экстремально малых треугольников сама нормаль либо квадрат её длины может underflow до нуля, и GPU способен вернуть результат, отличный от CPU. Для такой геометрии следует выбирать CPU backend. CMake встраивает shader в `embedded_shaders.hpp`; GPU-тесты вызывают весь публичный pipeline на настоящем OpenGL driver.
+GPU shader непосредственно поддерживает вырожденные point/segment-примитивы; `main.cpp` не выполняет preflight и не меняет выбранный backend. Хорошо обусловленные случаи сверяются с CPU в randomized-тестах, но намеренно неоднозначная почти копланарная геометрия не имеет гарантии exact-совпадения. CMake встраивает shader в `embedded_shaders.hpp`; GPU-тесты вызывают весь публичный pipeline на настоящем OpenGL driver.
 
 Целевая ответственность:
 
-- создание GPU buffers с геометрией и отметками;
+- создание и хранение pair/voxel cache buffers при заимствованном runtime-буфере;
 - создание программы через `hw3d.shader_program` и запуск GLSL compute shader;
 - корректная синхронизация compute-операций;
-- запись `Triangle::highlighted` в том же логическом формате, что у CPU backend;
+- прямая атомарная запись `highlighted` в общий runtime-record;
 - управление только теми OpenGL-ресурсами, которые относятся к вычислению пересечений.
 
 GPU backend требует активного OpenGL-контекста только при фактическом GPU-запуске. Его C++ API не должен заставлять `main.cpp` или renderer знать детали work groups, shader storage buffers и синхронизации.
@@ -650,19 +670,18 @@ GPU backend требует активного OpenGL-контекста толь
 
 Текущее поведение:
 
-- импортирует конфигурацию, окно, renderer и оба модуля пересечений;
+- импортирует конфигурацию, окно, renderer, GPU triangles и оба модуля пересечений;
 - принимает флаги `--headless` и `--use-gpu-intersections` в любом порядке, отклоняет неизвестные и повторные опции;
 - после разбора CLI вызывает `hw3d::read_configuration(std::cin)` до создания окна;
-- один раз выделяет runtime-вектор и массив motion bounds, заполняет их через `update_vertices(t = 0)` и `calculate_motion_bounds` и сохраняет размеры на всё время работы;
-- при GPU-флаге выполняет `hw3d::is_degenerate` для runtime-треугольников в начальном положении;
-- при найденной вырожденной геометрии один раз печатает `warning: GPU intersections require non-degenerate triangles; falling back to CPU` в `stderr` и выбирает CPU-backend;
+- один раз вычисляет массив motion bounds и сохраняет стабильный ID-порядок на всё время работы;
 - в CPU headless-режиме создаёт `CpuIntersectionDetector`, вызывает `update()` без GLFW, печатает отметки через пробел и завершает процесс;
-- в GPU headless-режиме с невырожденным входом создаёт невидимый context `1 x 1` и `GpuIntersectionDetector`, вызывает `update()`, печатает отметки и завершает процесс без renderer/event loop;
-- в оконном режиме создаёт видимое окно `1280 x 720`, один detector выбранного backend и `Renderer`; detector получает runtime-вектор и motion bounds, renderer использует те же данные;
+- в GPU headless-режиме создаёт невидимый context `1 x 1`, общий buffer, updater и detector, выполняет pipeline при `t = 0`, один раз скачивает результат, печатает flags и завершает процесс без renderer/event loop;
+- в CPU оконном режиме создаёт runtime-вектор, detector и renderer с внутренним GPU-буфером;
+- в GPU оконном режиме создаёт общий `GpuTriangleBuffer`, `GpuVertexUpdater`, detector и renderer, заимствующие его; CPU runtime-вектор не создаётся;
 - передаёт `WindowContext::run` одну лямбду, захватывающую состояние приложения по ссылке;
-- внутри лямбды накапливает ограниченный `delta_seconds`, зажимает время длительностью конфигурации, вызывает `update_vertices`, `detector.update()`, применяет управление камерой и вызывает `Renderer::render()`;
+- внутри CPU-лямбды вызывает `update_vertices`, detector и renderer, а внутри GPU-лямбды — updater, detector и renderer над одним SSBO;
 - после отрисовки точного конечного состояния вызывает `WindowContext::request_close()`;
-- объявляет detector и renderer после окна, поэтому при выходе их OpenGL-ресурсы освобождаются при ещё активном context;
+- объявляет GPU buffer/updater, detector и renderer после окна в порядке безопасного времени жизни, поэтому их OpenGL-ресурсы освобождаются при ещё активном context;
 - после штатного выхода из цикла возвращает `0`;
 - перехватывает `std::exception`, печатает `what()` в `stderr` и возвращает `1`.
 
@@ -678,27 +697,28 @@ GPU backend требует активного OpenGL-контекста толь
 - `cpu_intersections_tests` содержит 47 тестов `CpuIntersectionDetector`: пустой/единичный вход, сброс прежних отметок, повторные `update()`, статические и плотные motion-пары, принудительный voxel fallback, настраиваемый бюджет, интеграцию вращения с масштабированной осью, reallocation runtime-вектора без изменения размера, запрет изменения размера, одинаковые, вложенные, раздельные, компланарные, некомпланарные и почти параллельные треугольники, касание ребром/вершиной, sparse voxels, вырожденные point/segment комбинации, большие переносы, малые масштабы, metamorphic-набор и отклонение нечисловых координат даже при пустом pair-cache;
 - `window_context_tests` содержит 11 тестов: валидацию constructor, запрет второго живого экземпляра, повторное создание после destruction, невидимость headless-контекста и последующее создание видимого окна, закрытие до кадра, снимок ввода за один кадр, FPS/ms title на управляемом времени, пустой обработчик и передачу исключения из обработчика;
 - `shader_program_tests` содержит 5 GL-тестов: graphics/compute программы, ошибки компиляции и линковки, использование программы и перемещение владельца;
-- `renderer_tests` содержит 10 тестов с настоящим OpenGL context: ошибки constructor и согласованности motion bounds, состояние depth test, live-обновления highlight и вершин исходного span, фактические gray/red pixels, сравнение слабого ambient с направленным diffuse, методы движения и вращения и нулевой viewport;
-- `gpu_intersections_tests` содержит 28 GL-тестов `GpuIntersectionDetector`, включая линковку shader, повторные `update()`, статические и плотные motion-пары, принудительный voxel fallback, настраиваемый бюджет, интеграцию вращения с масштабированной осью, reallocation runtime-вектора, запрет изменения размера, сброс прежних отметок, обычные и малые невырожденные треугольники, геометрические случаи, исходный ID-порядок, границы 64/65 invocation и pair dispatch через несколько work groups.
+- `gpu_triangles_tests` содержит 7 GL-тестов: upload/download round-trip, точное состояние при нулевом времени и скорости, произвольную смещённую масштабированную ось, совпадение с CPU-вращением, абсолютное время без накопления, повторные update, ошибки размеров и времени и пустой buffer;
+- `renderer_tests` содержит 11 тестов с настоящим OpenGL context: ошибки constructor и согласованности motion bounds, состояние depth test, live-обновления highlight и вершин исходного CPU span, прямую видимость изменений заимствованного GPU buffer, фактические gray/red pixels, сравнение слабого ambient с направленным diffuse, методы движения и вращения и нулевой viewport;
+- `gpu_intersections_tests` содержит 37 GL-тестов `GpuIntersectionDetector`, включая линковку shader, повторные `update()`, статические и плотные motion-пары, принудительный voxel fallback, настраиваемый бюджет, интеграцию настоящего GPU-поворота с масштабированной осью, повторные host upload без пересоздания detector, сброс прежних отметок, point/segment/triangle комбинации, масштаб `1e-20`, большие переносы, почти параллельные хорошо обусловленные случаи, прямое CPU/GPU-сравнение фиксированного случайного набора, исходный ID-порядок, границы 64/65 invocation и pair dispatch через несколько work groups.
 
-Всего выполняется 157 GoogleTest case. Тесты обращаются только к публичному API модулей; внутренние функции implementation units покрываются транзитивно через публичные сценарии и не экспортируются специально ради тестирования. GLFW не предоставляет публичному модулю способ синтетически нажать стрелку или сдвинуть cursor, поэтому снимок ввода проверяется без искусственных событий, а реакция на реальные устройства остаётся smoke/manual проверкой. Расчёт FPS проверяется управляемым `glfwSetTime`, а чтение заголовка компилируется при GLFW 3.4 или новее. При появлении injectable input backend ограничение ввода следует заменить автоматическими проверками состояний стрелок и накопленных mouse offsets.
+Всего выполняется 174 GoogleTest case. Тесты обращаются только к публичному API модулей; внутренние функции implementation units покрываются транзитивно через публичные сценарии и не экспортируются специально ради тестирования. GLFW не предоставляет публичному модулю способ синтетически нажать стрелку или сдвинуть cursor, поэтому снимок ввода проверяется без искусственных событий, а реакция на реальные устройства остаётся smoke/manual проверкой. Расчёт FPS проверяется управляемым `glfwSetTime`, а чтение заголовка компилируется при GLFW 3.4 или новее. При появлении injectable input backend ограничение ввода следует заменить автоматическими проверками состояний стрелок и накопленных mouse offsets.
 
-`headless_cpu_e2e` запускает 39 сценариев отдельными процессами без графической среды: общие невырожденные случаи, CPU-обработку point/segment-примитивов, формат ввода, ошибки count и CLI. `headless_gpu_e2e` запускает 29 сценариев: общие случаи, умеренно малый масштаб, CPU fallback для одного и нескольких вырожденных треугольников, размеры около границ workgroup и оба порядка CLI-флагов. Каждый сценарий проверяет exit code, полный `stdout`, полный `stderr` и имеет собственный timeout. Два оконных e2e запускают настоящий CPU/GPU pipeline на одну секунду и проверяют автоматическое завершение; отдельный generator e2e проверяет seed, формат, диапазоны знаковых скоростей, ошибки CLI и совместимость вывода с parser настоящего приложения.
+`headless_cpu_e2e` запускает 39 сценариев отдельными процессами без графической среды: общие невырожденные случаи, CPU-обработку point/segment-примитивов, формат ввода, ошибки count и CLI. `headless_gpu_e2e` запускает 29 сценариев: общие случаи, умеренно малый масштаб, непосредственную GPU-обработку одного и нескольких вырожденных примитивов, размеры около границ workgroup и оба порядка CLI-флагов. Каждый сценарий проверяет exit code, полный `stdout`, полный `stderr` и имеет собственный timeout. Два оконных e2e запускают настоящий CPU/GPU pipeline на одну секунду и проверяют автоматическое завершение; отдельный generator e2e проверяет seed, формат, диапазоны знаковых скоростей, ошибки CLI и совместимость вывода с parser настоящего приложения.
 
-Четыре unit GL-набора, GPU headless e2e и оба оконных e2e требуют работающий OpenGL 4.6 driver. CTest запускает их последовательно, через X11, и при headless-конфигурации использует `xvfb-run`, если он доступен. Провал создания контекста считается ошибкой теста, а не молчаливым skip.
+Пять unit GL-наборов, GPU headless e2e и оба оконных e2e требуют работающий OpenGL 4.6 driver. CTest запускает их последовательно, через X11, и при headless-конфигурации использует `xvfb-run`, если он доступен. Провал создания контекста считается ошибкой теста, а не молчаливым skip.
 
 ## Архитектурные границы
 
-- Формат результата CPU и GPU един: одно поле `Triangle::highlighted` на входной треугольник, в исходном порядке. Полная численная эквивалентность GPU не гарантируется только для документированного экстремально малого масштаба float SAT.
+- Формат результата CPU и GPU логически един: один `highlighted` flag на входной треугольник в исходном порядке. CPU хранит его в `Triangle`, GPU — в общем runtime-record. Для хорошо обусловленной геометрии backend сохраняет CPU-семантику; намеренно неоднозначные `double`-determinant могут отличаться от adaptive exact CPU-предикатов.
 - `Configuration::triangles` после чтения считается неизменяемым; ось и скорость существуют только в `InitialTriangle`.
-- Массивы `InitialTriangle`, runtime-`Triangle` и `motion_bounds` имеют одинаковый размер и порядок; индекс является стабильным ID.
-- Runtime-вектор можно изменять поэлементно, но нельзя менять его размер, пока жив detector; detector хранит невладеющую ссылку на объект vector и проверяет сохранённый размер. Renderer хранит span: пока он жив, дополнительно запрещена любая reallocation или замена storage, а нарушение не может быть обнаружено автоматически.
+- `InitialTriangle`, CPU runtime-`Triangle` либо GPU runtime-record и `motion_bounds` имеют одинаковый размер и порядок; индекс является стабильным ID.
+- В CPU-ветке runtime-вектор можно изменять поэлементно, но нельзя менять его размер, пока жив CPU detector; renderer хранит span, поэтому reallocation или замена storage запрещена. В GPU-ветке размер `GpuTriangleBuffer` фиксируется при создании, а buffer обязан жить дольше updater, detector и заимствующего renderer.
 - `motion_bounds[i]` неизменяем и охватывает любое положение треугольника с ID `i` на полном обороте; он вычисляется один раз до создания detector и renderer.
-- `update_vertices` изменяет только вершины и сохраняет `highlighted`; detector изменяет только `highlighted`.
-- Покадровый `detector.update()` не должен перестраивать motion-pair cache или voxel fallback, пересоздавать GPU resources или выделять динамические контейнеры.
+- CPU `update_vertices` изменяет только вершины и сохраняет `highlighted`; CPU detector изменяет только `highlighted`. GPU updater записывает вершины, текущие AABB и сбрасывает flag; GPU detector отдельным clear-dispatch снова обнуляет и затем атомарно выставляет только flag.
+- Покадровые GPU `update()` не должны перестраивать motion-pair cache или voxel fallback, пересоздавать resources, выполнять geometry upload/readback или выделять CPU fallback. Единственный штатный GPU readback — однократный headless/test `download()`.
 - Конфигурационный модуль отвечает только за представление и чтение входа.
-- Вычислительные модули отвечают только за обнаружение пересечений и формирование отметок.
-- Renderer отвечает только за графические ресурсы и изображение сцены.
+- GPU triangles отвечает за общий runtime-буфер и вычисление текущей геометрии; модули пересечений отвечают только за формирование отметок.
+- Renderer отвечает только за подготовку своего CPU-upload buffer либо заимствование общего GPU buffer и изображение сцены.
 - `ShaderProgram` отвечает за компиляцию, линковку, выбор и освобождение OpenGL-программ; renderer и GPU backend отвечают за данные и команды конкретной задачи.
 - Window context отвечает за окно, контекст, event loop и маршрутизацию ввода, но не знает о renderer и камере.
 - `main.cpp` отвечает за связывание компонентов, но не содержит их внутренней логики.

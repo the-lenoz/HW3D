@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <iostream>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -12,6 +11,7 @@
 import hw3d.configuration;
 import hw3d.geometry;
 import hw3d.window_context;
+import hw3d.gpu_triangles;
 import hw3d.renderer;
 import hw3d.cpu_intersections;
 import hw3d.gpu_intersections;
@@ -64,32 +64,43 @@ void print_highlights(const std::span<const hw3d::Triangle> triangles)
     std::cout << '\n';
 }
 
+void apply_camera_input(
+    hw3d::Renderer& renderer,
+    const hw3d::FrameInput& input) noexcept
+{
+    renderer.rotate(input.mouse_x_offset, input.mouse_y_offset);
+    if (input.up) {
+        renderer.move_forward(input.delta_seconds);
+    }
+    if (input.down) {
+        renderer.move_back(input.delta_seconds);
+    }
+    if (input.left) {
+        renderer.move_left(input.delta_seconds);
+    }
+    if (input.right) {
+        renderer.move_right(input.delta_seconds);
+    }
+}
+
 }
 
 int main(const int argc, char** argv) try
 {
     const Options options = parse_options(argc, argv);
     const auto configuration = hw3d::read_configuration(std::cin);
-    std::vector<hw3d::Triangle> triangles(configuration.triangles.size());
     std::vector<hw3d::Aabb> motion_bounds(configuration.triangles.size());
     hw3d::calculate_motion_bounds(
         configuration.triangles,
         motion_bounds);
-    hw3d::update_vertices(
-        configuration.triangles,
-        triangles,
-        std::chrono::duration<double>::zero());
-
-    bool use_gpu_intersections = options.use_gpu_intersections;
-    if (use_gpu_intersections
-        && std::ranges::any_of(
-            triangles, hw3d::is_degenerate)) {
-        std::cerr << "warning: GPU intersections require non-degenerate "
-                     "triangles; falling back to CPU\n";
-        use_gpu_intersections = false;
-    }
+    const bool use_gpu_intersections = options.use_gpu_intersections;
 
     if (options.headless && !use_gpu_intersections) {
+        std::vector<hw3d::Triangle> triangles(configuration.triangles.size());
+        hw3d::update_vertices(
+            configuration.triangles,
+            triangles,
+            std::chrono::duration<double>::zero());
         hw3d::CpuIntersectionDetector detector{
             triangles, motion_bounds};
         detector.update();
@@ -104,22 +115,51 @@ int main(const int argc, char** argv) try
         options.headless};
 
     if (options.headless) {
+        hw3d::GpuTriangleBuffer triangles{configuration.triangles.size()};
+        hw3d::GpuVertexUpdater updater{
+            configuration.triangles, triangles};
         hw3d::GpuIntersectionDetector detector{
             triangles, motion_bounds};
+        updater.update(std::chrono::duration<double>::zero());
         detector.update();
-        print_highlights(triangles);
+        std::vector<hw3d::Triangle> downloaded(configuration.triangles.size());
+        triangles.download(downloaded);
+        print_highlights(downloaded);
         return 0;
     }
 
-    std::unique_ptr<hw3d::CpuIntersectionDetector> cpu_detector;
-    std::unique_ptr<hw3d::GpuIntersectionDetector> gpu_detector;
     if (use_gpu_intersections) {
-        gpu_detector = std::make_unique<hw3d::GpuIntersectionDetector>(
-            triangles, motion_bounds);
-    } else {
-        cpu_detector = std::make_unique<hw3d::CpuIntersectionDetector>(
-            triangles, motion_bounds);
+        hw3d::GpuTriangleBuffer triangles{configuration.triangles.size()};
+        hw3d::GpuVertexUpdater updater{
+            configuration.triangles, triangles};
+        hw3d::GpuIntersectionDetector detector{
+            triangles, motion_bounds};
+        hw3d::Renderer renderer{triangles, motion_bounds};
+        std::chrono::duration<double> elapsed{};
+        const std::chrono::duration<double> simulation_duration =
+            configuration.simulation_duration;
+
+        window.run([&](const hw3d::FrameInput& input) {
+            elapsed = std::min(
+                elapsed + std::chrono::duration<double>{input.delta_seconds},
+                simulation_duration);
+            updater.update(elapsed);
+            detector.update();
+            apply_camera_input(renderer, input);
+            renderer.render();
+            if (elapsed >= simulation_duration) {
+                window.request_close();
+            }
+        });
+        return 0;
     }
+
+    std::vector<hw3d::Triangle> triangles(configuration.triangles.size());
+    hw3d::update_vertices(
+        configuration.triangles,
+        triangles,
+        std::chrono::duration<double>::zero());
+    hw3d::CpuIntersectionDetector detector{triangles, motion_bounds};
     hw3d::Renderer renderer{triangles, motion_bounds};
     std::chrono::duration<double> elapsed{};
     const std::chrono::duration<double> simulation_duration =
@@ -133,25 +173,8 @@ int main(const int argc, char** argv) try
             configuration.triangles,
             triangles,
             elapsed);
-
-        if (use_gpu_intersections) {
-            gpu_detector->update();
-        } else {
-            cpu_detector->update();
-        }
-        renderer.rotate(input.mouse_x_offset, input.mouse_y_offset);
-        if (input.up) {
-            renderer.move_forward(input.delta_seconds);
-        }
-        if (input.down) {
-            renderer.move_back(input.delta_seconds);
-        }
-        if (input.left) {
-            renderer.move_left(input.delta_seconds);
-        }
-        if (input.right) {
-            renderer.move_right(input.delta_seconds);
-        }
+        detector.update();
+        apply_camera_input(renderer, input);
         renderer.render();
         if (elapsed >= simulation_duration) {
             window.request_close();

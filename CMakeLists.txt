@@ -10,6 +10,8 @@ set(HW3D_RENDERER_FRAGMENT_SHADER
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.frag.glsl")
 set(HW3D_COMPUTE_SHADER
     "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_intersections/shaders/intersections.comp.glsl")
+set(HW3D_VERTEX_UPDATE_SHADER
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_triangles/shaders/update_vertices.comp.glsl")
 set(HW3D_SHADER_GENERATOR
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shaders.cmake")
 
@@ -20,6 +22,7 @@ if(NOT EXISTS "${HW3D_SHADER_HEADER}")
             "-DVERTEX_SHADER=${HW3D_RENDERER_VERTEX_SHADER}"
             "-DFRAGMENT_SHADER=${HW3D_RENDERER_FRAGMENT_SHADER}"
             "-DCOMPUTE_SHADER=${HW3D_COMPUTE_SHADER}"
+            "-DVERTEX_UPDATE_SHADER=${HW3D_VERTEX_UPDATE_SHADER}"
             "-DOUTPUT_HEADER=${HW3D_SHADER_HEADER}"
             -P "${HW3D_SHADER_GENERATOR}"
         COMMAND_ERROR_IS_FATAL ANY
@@ -61,12 +64,14 @@ add_custom_command(
         "-DVERTEX_SHADER=${HW3D_RENDERER_VERTEX_SHADER}"
         "-DFRAGMENT_SHADER=${HW3D_RENDERER_FRAGMENT_SHADER}"
         "-DCOMPUTE_SHADER=${HW3D_COMPUTE_SHADER}"
+        "-DVERTEX_UPDATE_SHADER=${HW3D_VERTEX_UPDATE_SHADER}"
         "-DOUTPUT_HEADER=${HW3D_SHADER_HEADER}"
         -P "${HW3D_SHADER_GENERATOR}"
     DEPENDS
         "${HW3D_RENDERER_VERTEX_SHADER}"
         "${HW3D_RENDERER_FRAGMENT_SHADER}"
         "${HW3D_COMPUTE_SHADER}"
+        "${HW3D_VERTEX_UPDATE_SHADER}"
         "${HW3D_SHADER_GENERATOR}"
     COMMENT "Embedding GLSL shaders"
     VERBATIM
@@ -84,6 +89,7 @@ target_sources(
         src/geometry/robust_predicates.cpp
         src/window_context/window_context.cpp
         src/shader_program/shader_program.cpp
+        src/gpu_triangles/gpu_triangles.cpp
         src/renderer/renderer.cpp
         src/cpu_intersections/cpu_intersections.cpp
         src/gpu_intersections/gpu_intersections.cpp
@@ -94,6 +100,7 @@ target_sources(
             src/geometry/geometry.cppm
             src/window_context/window_context.cppm
             src/shader_program/shader_program.cppm
+            src/gpu_triangles/gpu_triangles.cppm
             src/renderer/renderer.cppm
             src/cpu_intersections/cpu_intersections.cppm
             src/gpu_intersections/gpu_intersections.cppm
@@ -201,6 +208,10 @@ if(BUILD_TESTING)
     add_hw3d_gl_test(
         shader_program_tests
         tests/shader_program_tests.cpp
+    )
+    add_hw3d_gl_test(
+        gpu_triangles_tests
+        tests/gpu_triangles_tests.cpp
     )
     add_hw3d_gl_test(
         renderer_tests
@@ -318,6 +329,7 @@ if(BUILD_TESTING)
     set_tests_properties(
         window_context_tests
         shader_program_tests
+        gpu_triangles_tests
         renderer_tests
         gpu_intersections_tests
         PROPERTIES

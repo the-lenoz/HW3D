@@ -17,6 +17,7 @@ module;
 module hw3d.renderer;
 import hw3d.configuration;
 import hw3d.geometry;
+import hw3d.gpu_triangles;
 import hw3d.shader_program;
 
 namespace hw3d {
@@ -130,35 +131,6 @@ Matrix4 look_at(
     };
 }
 
-Vec3 triangle_normal(const Triangle& triangle) noexcept
-{
-    const Vec3 first_edge{
-        triangle.b.x - triangle.a.x,
-        triangle.b.y - triangle.a.y,
-        triangle.b.z - triangle.a.z};
-    const Vec3 second_edge{
-        triangle.c.x - triangle.a.x,
-        triangle.c.y - triangle.a.y,
-        triangle.c.z - triangle.a.z};
-    const Vec3 normal = cross(first_edge, second_edge);
-    const float normal_length = length(normal);
-
-    if (!std::isfinite(normal_length)
-        || normal_length <= std::numeric_limits<float>::epsilon()) {
-        return {0.0F, 1.0F, 0.0F};
-    }
-
-    return scale(normal, 1.0F / normal_length);
-}
-
-struct alignas(16) GpuTriangle {
-    std::array<float, 4> a;
-    std::array<float, 4> b;
-    std::array<float, 4> c;
-    std::array<float, 4> normal;
-};
-static_assert(sizeof(GpuTriangle) == 64);
-
 struct SceneBounds {
     Vec3 camera_position;
     Vec3 center;
@@ -263,13 +235,31 @@ public:
     Impl(
         const std::span<const Triangle> triangles,
         const std::span<const Aabb> motion_bounds)
-        : triangles_(triangles)
+        : triangles_(triangles),
+          owned_triangle_buffer_(
+              std::make_unique<GpuTriangleBuffer>(triangles.size())),
+          triangle_buffer_(owned_triangle_buffer_.get())
     {
-        if (triangles.empty()) {
+        initialize(triangles.size(), motion_bounds);
+    }
+
+    Impl(
+        const GpuTriangleBuffer& triangles,
+        const std::span<const Aabb> motion_bounds)
+        : triangle_buffer_(&triangles)
+    {
+        initialize(triangles.size(), motion_bounds);
+    }
+
+    void initialize(
+        const std::size_t triangle_count,
+        const std::span<const Aabb> motion_bounds)
+    {
+        if (triangle_count == 0) {
             throw std::invalid_argument(
                 "renderer requires at least one triangle");
         }
-        if (motion_bounds.size() != triangles_.size()) {
+        if (motion_bounds.size() != triangle_count) {
             throw std::invalid_argument(
                 "triangle and motion bound counts must match");
         }
@@ -278,7 +268,7 @@ public:
             throw std::invalid_argument(
                 "motion bounds must be finite and ordered");
         }
-        vertex_count_ = static_cast<GLsizei>(triangles_.size() * 3);
+        vertex_count_ = static_cast<GLsizei>(triangle_count * 3);
 
         const SceneBounds bounds = scene_bounds(motion_bounds);
         camera_position_ = bounds.camera_position;
@@ -296,12 +286,6 @@ public:
         }
 
         glGenVertexArrays(1, &vertex_array_);
-        glCreateBuffers(1, &triangle_buffer_);
-        glNamedBufferData(
-            triangle_buffer_,
-            static_cast<GLsizeiptr>(triangles_.size() * sizeof(GpuTriangle)),
-            nullptr,
-            GL_STREAM_DRAW);
 
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
@@ -309,7 +293,6 @@ public:
 
     ~Impl()
     {
-        glDeleteBuffers(1, &triangle_buffer_);
         glDeleteVertexArrays(1, &vertex_array_);
     }
 
@@ -321,7 +304,9 @@ public:
             return;
         }
 
-        update_triangle_buffer();
+        if (!triangles_.empty()) {
+            owned_triangle_buffer_->upload(triangles_);
+        }
 
         glClearColor(0.04F, 0.05F, 0.08F, 1.0F);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -346,13 +331,11 @@ public:
             1,
             GL_FALSE,
             view_projection.data());
-        glBindBufferBase(
-            GL_SHADER_STORAGE_BUFFER,
-            0,
-            triangle_buffer_);
+        triangle_buffer_->bind_for_shader_storage(0);
         glBindVertexArray(vertex_array_);
         glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
         glBindVertexArray(0);
+        glFinish();
     }
 
     void move_forward(const float delta_seconds) noexcept
@@ -393,42 +376,6 @@ public:
     }
 
 private:
-    void update_triangle_buffer()
-    {
-        auto* const mapped = static_cast<GpuTriangle*>(
-            glMapNamedBufferRange(
-                triangle_buffer_,
-                0,
-                static_cast<GLsizeiptr>(
-                    triangles_.size() * sizeof(GpuTriangle)),
-                GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT));
-        if (mapped == nullptr) {
-            throw std::runtime_error(
-                "failed to map renderer triangle buffer");
-        }
-
-        for (std::size_t index = 0; index < triangles_.size(); ++index) {
-            const Triangle& triangle = triangles_[index];
-            const Vec3 normal = triangle_normal(triangle);
-            mapped[index] = {
-                {
-                    triangle.a.x,
-                    triangle.a.y,
-                    triangle.a.z,
-                    triangle.highlighted ? 1.0F : 0.0F,
-                },
-                {triangle.b.x, triangle.b.y, triangle.b.z, 0.0F},
-                {triangle.c.x, triangle.c.y, triangle.c.z, 0.0F},
-                {normal.x, normal.y, normal.z, 0.0F},
-            };
-        }
-
-        if (glUnmapNamedBuffer(triangle_buffer_) != GL_TRUE) {
-            throw std::runtime_error(
-                "renderer triangle buffer contents became invalid");
-        }
-    }
-
     Vec3 direction() const noexcept
     {
         return camera_direction(yaw_radians_, pitch_radians_);
@@ -442,8 +389,9 @@ private:
 
     std::optional<ShaderProgram> program_;
     std::span<const Triangle> triangles_;
+    std::unique_ptr<GpuTriangleBuffer> owned_triangle_buffer_;
+    const GpuTriangleBuffer* triangle_buffer_{};
     GLuint vertex_array_{};
-    GLuint triangle_buffer_{};
     GLint view_projection_location_{};
     GLsizei vertex_count_{};
     Vec3 camera_position_{};
@@ -456,6 +404,13 @@ private:
 
 Renderer::Renderer(
     const std::span<const Triangle> triangles,
+    const std::span<const Aabb> motion_bounds)
+    : impl_(std::make_unique<Impl>(triangles, motion_bounds))
+{
+}
+
+Renderer::Renderer(
+    const GpuTriangleBuffer& triangles,
     const std::span<const Aabb> motion_bounds)
     : impl_(std::make_unique<Impl>(triangles, motion_bounds))
 {

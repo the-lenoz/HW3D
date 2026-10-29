@@ -3,17 +3,17 @@ module;
 #include <memory>
 #include <cstddef>
 #include <span>
-#include <vector>
 
 export module hw3d.gpu_intersections;
 import hw3d.geometry;
+import hw3d.gpu_triangles;
 
 export namespace hw3d {
 
 class GpuIntersectionDetector final {
 public:
     GpuIntersectionDetector(
-        std::vector<Triangle>& triangles,
+        GpuTriangleBuffer& triangles,
         std::span<const Aabb> motion_bounds,
         std::size_t maximum_pair_count =
             maximum_cached_triangle_pair_count);

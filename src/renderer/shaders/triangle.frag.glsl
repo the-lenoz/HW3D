@@ -3,7 +3,7 @@
 layout(location = 0) out vec4 fragment_color;
 
 in noperspective vec3 fragment_barycentric;
-flat in float fragment_highlighted;
+flat in uint fragment_highlighted;
 flat in vec3 fragment_normal;
 
 void main()
@@ -26,7 +26,7 @@ void main()
     vec3 base_color = mix(
         regular_color,
         highlighted_color,
-        step(0.5, fragment_highlighted));
+        fragment_highlighted == 0u ? 0.0 : 1.0);
     vec3 fill_color = base_color * light_intensity;
     float distance_to_edge = min(
         fragment_barycentric.x,

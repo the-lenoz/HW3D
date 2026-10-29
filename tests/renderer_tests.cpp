@@ -11,6 +11,7 @@
 
 import hw3d.configuration;
 import hw3d.geometry;
+import hw3d.gpu_triangles;
 import hw3d.renderer;
 import hw3d.window_context;
 
@@ -168,6 +169,30 @@ TEST_F(RendererTest, RendersHighlightedTriangleRed)
     const auto regular_pixel = center_pixel();
 
     triangles.front().highlighted = true;
+    renderer.render();
+    glFinish();
+    const auto highlighted_pixel = center_pixel();
+
+    EXPECT_NEAR(regular_pixel[0], regular_pixel[1], 3);
+    EXPECT_GT(highlighted_pixel[0], highlighted_pixel[1] + 60U);
+    EXPECT_GT(highlighted_pixel[0], highlighted_pixel[2] + 60U);
+    EXPECT_EQ(glGetError(), GL_NO_ERROR);
+}
+
+TEST_F(RendererTest, RendersDirectlyFromBorrowedGpuTriangleBuffer)
+{
+    auto triangles = centered_triangle;
+    const auto bounds = static_motion_bounds(triangles);
+    hw3d::GpuTriangleBuffer buffer{triangles.size()};
+    buffer.upload(triangles);
+    hw3d::Renderer renderer{buffer, bounds};
+
+    renderer.render();
+    glFinish();
+    const auto regular_pixel = center_pixel();
+
+    triangles.front().highlighted = true;
+    buffer.upload(triangles);
     renderer.render();
     glFinish();
     const auto highlighted_pixel = center_pixel();

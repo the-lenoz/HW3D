@@ -6,6 +6,7 @@ module;
 export module hw3d.renderer;
 
 import hw3d.geometry;
+import hw3d.gpu_triangles;
 
 export namespace hw3d {
 
@@ -13,6 +14,9 @@ class Renderer final {
 public:
     Renderer(
         std::span<const Triangle> triangles,
+        std::span<const Aabb> motion_bounds);
+    Renderer(
+        const GpuTriangleBuffer& triangles,
         std::span<const Aabb> motion_bounds);
     ~Renderer();
 
