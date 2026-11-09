@@ -257,4 +257,73 @@ TEST(Configuration, PreservesPositiveZeroAngularSpeed)
     EXPECT_FALSE(std::signbit(speed));
 }
 
+TEST(ConfigurationValidation, AcceptsDegenerateTriangle)
+{
+    const hw3d::Configuration configuration{
+        .simulation_duration = std::chrono::seconds{1},
+        .triangles = {{
+            .a = {1, 1, 1},
+            .b = {1, 1, 1},
+            .c = {1, 1, 1},
+            .rotation_axis_origin = {},
+            .rotation_axis_direction = {0, 0, 1},
+            .angular_velocity_radians_per_second = 0,
+        }},
+    };
+    EXPECT_NO_THROW(hw3d::validate_configuration(configuration));
+}
+
+TEST(ConfigurationValidation, RejectsNonFiniteFieldsAndZeroAxis)
+{
+    hw3d::Configuration configuration{
+        .simulation_duration = std::chrono::seconds{1},
+        .triangles = {{
+            .a = {0, 0, 0},
+            .b = {1, 0, 0},
+            .c = {0, 1, 0},
+            .rotation_axis_origin = {},
+            .rotation_axis_direction = {0, 0, 1},
+            .angular_velocity_radians_per_second = 0,
+        }},
+    };
+    configuration.triangles[0].a.x =
+        std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(
+        hw3d::validate_configuration(configuration), std::invalid_argument);
+    configuration.triangles[0].a.x = 0;
+    configuration.triangles[0].rotation_axis_origin.y =
+        std::numeric_limits<float>::infinity();
+    EXPECT_THROW(
+        hw3d::validate_configuration(configuration), std::invalid_argument);
+    configuration.triangles[0].rotation_axis_origin.y = 0;
+    configuration.triangles[0].rotation_axis_direction = {};
+    EXPECT_THROW(
+        hw3d::validate_configuration(configuration), std::invalid_argument);
+}
+
+TEST(ConfigurationValidation, RejectsUnsafeGpuFloatDomain)
+{
+    hw3d::Configuration configuration{
+        .simulation_duration = std::chrono::seconds{2},
+        .triangles = {{
+            .a = {0, 0, 0},
+            .b = {1, 0, 0},
+            .c = {0, 1, 0},
+            .rotation_axis_origin = {},
+            .rotation_axis_direction = {0, 0, 1},
+            .angular_velocity_radians_per_second = 0,
+        }},
+    };
+    configuration.triangles[0].a.x =
+        std::numeric_limits<float>::max() / 2.0F;
+    EXPECT_THROW(
+        hw3d::validate_configuration(configuration), std::invalid_argument);
+
+    configuration.triangles[0].a.x = 0;
+    configuration.triangles[0].angular_velocity_radians_per_second =
+        std::numeric_limits<float>::max() / 2.0F;
+    EXPECT_THROW(
+        hw3d::validate_configuration(configuration), std::invalid_argument);
+}
+
 }

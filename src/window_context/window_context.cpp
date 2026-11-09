@@ -1,10 +1,10 @@
 module;
 
 #define GLFW_INCLUDE_NONE
-#include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -24,8 +24,7 @@ public:
     Impl(
         const int width,
         const int height,
-        const char* const title,
-        const bool headless)
+        const char* const title)
     {
         if (width <= 0 || height <= 0) {
             throw std::invalid_argument("window dimensions must be positive");
@@ -44,12 +43,7 @@ public:
 
         window_context_exists = true;
 
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-        glfwWindowHint(GLFW_VISIBLE, headless ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
         window_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
         if (window_ == nullptr) {
@@ -64,32 +58,13 @@ public:
             throw std::runtime_error(message);
         }
 
-        glfwMakeContextCurrent(window_);
-
-        if (gladLoadGL(
-                reinterpret_cast<GLADloadfunc>(glfwGetProcAddress)) == 0) {
-            glfwDestroyWindow(window_);
-            window_ = nullptr;
-            window_context_exists = false;
-            glfwTerminate();
-            throw std::runtime_error("failed to initialize GLAD");
-        }
-
-        if (!headless) {
-            glfwSwapInterval(1);
-            glfwSetWindowUserPointer(window_, this);
-            glfwSetKeyCallback(window_, &Impl::on_key);
-            glfwSetCursorPosCallback(window_, &Impl::on_cursor_position);
-            glfwSetFramebufferSizeCallback(
-                window_,
-                &Impl::on_framebuffer_size);
-            glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-            if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
-                glfwSetInputMode(
-                    window_,
-                    GLFW_RAW_MOUSE_MOTION,
-                    GLFW_TRUE);
-            }
+        glfwSetWindowUserPointer(window_, this);
+        glfwSetKeyCallback(window_, &Impl::on_key);
+        glfwSetCursorPosCallback(window_, &Impl::on_cursor_position);
+        glfwSetFramebufferSizeCallback(window_, &Impl::on_framebuffer_size);
+        glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
+            glfwSetInputMode(window_, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         }
 
         int framebuffer_width{};
@@ -98,7 +73,10 @@ public:
             window_,
             &framebuffer_width,
             &framebuffer_height);
-        glViewport(0, 0, framebuffer_width, framebuffer_height);
+        framebuffer_width_ = static_cast<std::uint32_t>(
+            std::max(framebuffer_width, 0));
+        framebuffer_height_ = static_cast<std::uint32_t>(
+            std::max(framebuffer_height, 0));
     }
 
     ~Impl()
@@ -155,6 +133,8 @@ public:
                 .mouse_x_offset = mouse_x_offset_,
                 .mouse_y_offset = mouse_y_offset_,
                 .delta_seconds = delta_seconds,
+                .framebuffer_width = framebuffer_width_,
+                .framebuffer_height = framebuffer_height_,
             };
             mouse_x_offset_ = 0.0F;
             mouse_y_offset_ = 0.0F;
@@ -162,14 +142,17 @@ public:
             if (on_frame) {
                 on_frame(input);
             }
-
-            glfwSwapBuffers(window_);
         }
     }
 
     void request_close() noexcept
     {
         glfwSetWindowShouldClose(window_, GLFW_TRUE);
+    }
+
+    [[nodiscard]] GLFWwindow* native_handle() const noexcept
+    {
+        return window_;
     }
 
 private:
@@ -212,11 +195,17 @@ private:
     }
 
     static void on_framebuffer_size(
-        GLFWwindow*,
+        GLFWwindow* const window,
         const int width,
         const int height) noexcept
     {
-        glViewport(0, 0, width, height);
+        auto* const self = static_cast<Impl*>(
+            glfwGetWindowUserPointer(window));
+        if (self == nullptr) return;
+        self->framebuffer_width_ = static_cast<std::uint32_t>(
+            std::max(width, 0));
+        self->framebuffer_height_ = static_cast<std::uint32_t>(
+            std::max(height, 0));
     }
 
     GLFWwindow* window_ = nullptr;
@@ -225,15 +214,16 @@ private:
     double last_cursor_y_{};
     float mouse_x_offset_{};
     float mouse_y_offset_{};
+    std::uint32_t framebuffer_width_{};
+    std::uint32_t framebuffer_height_{};
     bool first_mouse_event_ = true;
 };
 
 WindowContext::WindowContext(
     const int width,
     const int height,
-    const char* const title,
-    const bool headless)
-    : impl_(std::make_unique<Impl>(width, height, title, headless))
+    const char* const title)
+    : impl_(std::make_unique<Impl>(width, height, title))
 {
 }
 
@@ -247,6 +237,11 @@ void WindowContext::run(std::function<void(const FrameInput&)> on_frame)
 void WindowContext::request_close() noexcept
 {
     impl_->request_close();
+}
+
+void* WindowContext::native_handle() const noexcept
+{
+    return impl_->native_handle();
 }
 
 }

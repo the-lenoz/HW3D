@@ -43,20 +43,20 @@ def main() -> int:
     parser.add_argument("--binary", type=Path, required=True)
     arguments = parser.parse_args()
 
-    common = ("2.5", "4", "20", "--duration", "7", "--seed", "123")
+    common = ("2.5", "4", "20", "--duration", "1", "--seed", "123")
     positive = run_generator(arguments.generator, *common, "--angular-speed", "90")
     repeated = run_generator(arguments.generator, *common, "--angular-speed", "90")
     assert positive.returncode == 0, positive.stderr
     assert positive.stdout == repeated.stdout
-    assert all(0.0 <= value <= 90.0 for value in parse_output(positive.stdout, 4, 7))
+    assert all(0.0 <= value <= 90.0 for value in parse_output(positive.stdout, 4, 1))
 
     negative = run_generator(arguments.generator, *common, "--angular-speed", "-90")
     assert negative.returncode == 0, negative.stderr
-    assert all(-90.0 <= value <= 0.0 for value in parse_output(negative.stdout, 4, 7))
+    assert all(-90.0 <= value <= 0.0 for value in parse_output(negative.stdout, 4, 1))
 
     zero = run_generator(arguments.generator, *common, "--angular-speed", "0")
     assert zero.returncode == 0, zero.stderr
-    assert all(value == 0.0 for value in parse_output(zero.stdout, 4, 7))
+    assert all(value == 0.0 for value in parse_output(zero.stdout, 4, 1))
 
     for invalid in (
         ("2.5", "0", "20"),
@@ -68,7 +68,7 @@ def main() -> int:
         assert failed.stderr
 
     application = subprocess.run(
-        [str(arguments.binary), "--headless"],
+        [str(arguments.binary)],
         input=positive.stdout,
         text=True,
         capture_output=True,
@@ -77,8 +77,7 @@ def main() -> int:
     )
     assert application.returncode == 0, application.stderr
     assert application.stderr == ""
-    assert len(application.stdout.split()) == 4
-    assert set(application.stdout.split()) <= {"0", "1"}
+    assert application.stdout == ""
     return 0
 
 

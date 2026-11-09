@@ -2,11 +2,14 @@ module;
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
 #include <istream>
 #include <numbers>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -17,6 +20,14 @@ namespace hw3d {
 namespace {
 
 constexpr std::int64_t max_triangle_count = 1'000'000;
+
+[[noreturn]] void invalid_triangle(
+    const std::size_t index,
+    const char* const reason)
+{
+    throw std::invalid_argument(
+        "triangle " + std::to_string(index) + ": " + reason);
+}
 
 std::chrono::seconds read_simulation_duration(std::istream& input)
 {
@@ -159,7 +170,112 @@ Configuration read_configuration(std::istream& input)
         configuration.triangles.push_back(
             read_triangle(input, static_cast<std::size_t>(index + 1)));
     }
+    try {
+        validate_configuration(configuration);
+    } catch (const std::invalid_argument& error) {
+        throw std::runtime_error(error.what());
+    }
     return configuration;
+}
+
+void validate_configuration(const Configuration& configuration)
+{
+    if (configuration.triangles.empty()
+        || configuration.triangles.size()
+            >= static_cast<std::size_t>(max_triangle_count)) {
+        throw std::invalid_argument(
+            "triangle count must be in the range (0, 1000000)");
+    }
+    if (configuration.simulation_duration.count() <= 0) {
+        throw std::invalid_argument("simulation duration must be positive");
+    }
+
+    constexpr double safe_limit =
+        static_cast<double>(std::numeric_limits<float>::max()) / 4.0;
+    const double duration = static_cast<double>(
+        configuration.simulation_duration.count());
+
+    for (std::size_t offset = 0;
+         offset < configuration.triangles.size();
+         ++offset) {
+        const std::size_t index = offset + 1;
+        const InitialTriangle& triangle = configuration.triangles[offset];
+        const std::array<Vec3, 3> vertices{
+            triangle.a, triangle.b, triangle.c};
+        if (!std::ranges::all_of(vertices, finite)) {
+            invalid_triangle(index, "vertices must be finite");
+        }
+        if (!finite(triangle.rotation_axis_origin)) {
+            invalid_triangle(index, "rotation axis origin must be finite");
+        }
+        if (!finite(triangle.rotation_axis_direction)) {
+            invalid_triangle(index, "rotation axis direction must be finite");
+        }
+        const Vec3& direction = triangle.rotation_axis_direction;
+        const double direction_length = std::hypot(
+            static_cast<double>(direction.x),
+            static_cast<double>(direction.y),
+            static_cast<double>(direction.z));
+        if (!std::isfinite(direction_length) || direction_length == 0.0) {
+            invalid_triangle(
+                index, "rotation axis direction must be non-zero");
+        }
+        if (!std::isfinite(
+                triangle.angular_velocity_radians_per_second)) {
+            invalid_triangle(index, "angular speed must be finite");
+        }
+
+        const Vec3& origin = triangle.rotation_axis_origin;
+        const double maximum_origin_component = std::max({
+            std::abs(static_cast<double>(origin.x)),
+            std::abs(static_cast<double>(origin.y)),
+            std::abs(static_cast<double>(origin.z)),
+        });
+        for (const Vec3& vertex : vertices) {
+            const double radius = std::hypot(
+                static_cast<double>(vertex.x) - origin.x,
+                static_cast<double>(vertex.y) - origin.y,
+                static_cast<double>(vertex.z) - origin.z);
+            if (!std::isfinite(radius)
+                || maximum_origin_component + 8.0 * radius > safe_limit) {
+                invalid_triangle(
+                    index,
+                    "rotation radius exceeds the GPU-safe float domain");
+            }
+        }
+
+        const double accumulated_angle = std::abs(
+            static_cast<double>(
+                triangle.angular_velocity_radians_per_second)) * duration;
+        if (!std::isfinite(accumulated_angle)
+            || accumulated_angle > safe_limit) {
+            invalid_triangle(
+                index,
+                "angular speed times duration exceeds the GPU-safe float domain");
+        }
+
+        // A full rotation stays within origin +/- radius on every axis.
+        // Checking this conservative bound here catches any non-finite or
+        // inverted motion bound before Vulkan resources are created.
+        for (const Vec3& vertex : vertices) {
+            const double radius = std::hypot(
+                static_cast<double>(vertex.x) - origin.x,
+                static_cast<double>(vertex.y) - origin.y,
+                static_cast<double>(vertex.z) - origin.z);
+            const std::array<double, 3> origin_components{
+                origin.x, origin.y, origin.z};
+            for (const double component : origin_components) {
+                const double minimum = component - radius;
+                const double maximum = component + radius;
+                if (!std::isfinite(minimum) || !std::isfinite(maximum)
+                    || minimum > maximum
+                    || minimum < -safe_limit || maximum > safe_limit) {
+                    invalid_triangle(
+                        index, "motion bounds must be finite and ordered");
+                }
+            }
+        }
+    }
 }
 
 }

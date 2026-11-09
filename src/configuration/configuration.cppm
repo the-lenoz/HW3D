@@ -29,5 +29,6 @@ struct Configuration {
 };
 
 [[nodiscard]] Configuration read_configuration(std::istream& input);
+void validate_configuration(const Configuration& configuration);
 
 }
