@@ -1,10 +1,9 @@
-#version 460 core
+#version 460
 
+layout(location = 0) noperspective in vec3 fragment_barycentric;
+layout(location = 1) flat in uint fragment_highlighted;
+layout(location = 2) flat in vec3 fragment_normal;
 layout(location = 0) out vec4 fragment_color;
-
-in noperspective vec3 fragment_barycentric;
-flat in uint fragment_highlighted;
-flat in vec3 fragment_normal;
 
 void main()
 {
@@ -21,7 +20,7 @@ void main()
         dot(surface_normal, direction_to_light),
         0.0);
     float light_intensity = ambient_strength
-        + diffuse_strength * diffuse_factor;
+    + diffuse_strength * diffuse_factor;
 
     vec3 base_color = mix(
         regular_color,
@@ -37,6 +36,6 @@ void main()
         distance_to_edge);
 
     fragment_color = vec4(
-        mix(outline_color, fill_color, outline_blend),
-        1.0);
+    mix(outline_color, fill_color, outline_blend),
+    1.0);
 }

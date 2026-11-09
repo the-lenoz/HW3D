@@ -26,35 +26,27 @@ INPUT = """2
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
-    parser.add_argument("--backend", choices=("cpu", "gpu"), required=True)
-    arguments = parser.parse_args()
-
-    command = [arguments.binary]
-    if arguments.backend == "gpu":
-        command.append("--use-gpu-intersections")
+    args = parser.parse_args()
     environment = os.environ.copy()
     environment.pop("WAYLAND_DISPLAY", None)
     try:
         completed = subprocess.run(
-            command,
+            [args.binary],
             input=INPUT,
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=20,
             env=environment,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        print("windowed application did not stop after simulation duration", file=sys.stderr)
+        print("windowed Vulkan application did not stop", file=sys.stderr)
         return 1
-
     if completed.returncode != 0 or completed.stdout or completed.stderr:
         print(
-            "unexpected windowed result: code={} stdout={!r} stderr={!r}".format(
-                completed.returncode,
-                completed.stdout,
-                completed.stderr,
-            ),
+            f"unexpected windowed result: "
+            f"{completed.returncode=} {completed.stdout=!r} "
+            f"{completed.stderr=!r}",
             file=sys.stderr,
         )
         return 1

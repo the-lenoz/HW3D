@@ -1,6 +1,5 @@
 module;
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -12,70 +11,6 @@ export module hw3d.geometry;
 import hw3d.configuration;
 
 export namespace hw3d {
-
-struct Triangle {
-    Vec3 a;
-    Vec3 b;
-    Vec3 c;
-    bool highlighted = false;
-};
-
-void update_vertices(
-    std::span<const InitialTriangle> initial,
-    std::span<Triangle> current,
-    std::chrono::duration<double> elapsed);
-
-enum class Sign : std::int8_t {
-    negative = -1,
-    zero = 0,
-    positive = 1,
-};
-
-template<class Scalar>
-struct Vector2 {
-    Scalar x;
-    Scalar y;
-};
-
-template<class Scalar>
-struct Vector3 {
-    Scalar x;
-    Scalar y;
-    Scalar z;
-};
-
-class Expansion final {
-public:
-    Expansion() = default;
-    explicit Expansion(float exact_value);
-
-    [[nodiscard]] bool is_zero() const noexcept;
-    [[nodiscard]] Sign sign() const noexcept;
-
-    friend bool operator==(const Expansion&, const Expansion&);
-    friend Expansion operator+(const Expansion&, const Expansion&);
-    friend Expansion operator-(const Expansion&, const Expansion&);
-    friend Expansion operator-(const Expansion&);
-    friend Expansion operator*(const Expansion&, const Expansion&);
-
-private:
-    explicit Expansion(std::span<const double> components);
-
-    std::vector<double> components_;
-};
-
-[[nodiscard]] Sign orient2d(
-    const Vector2<float>& a,
-    const Vector2<float>& b,
-    const Vector2<float>& c);
-
-[[nodiscard]] Sign orient3d(
-    const Vec3& a,
-    const Vec3& b,
-    const Vec3& c,
-    const Vec3& d);
-
-[[nodiscard]] bool is_degenerate(const Triangle& triangle);
 
 struct Aabb {
     Vec3 minimum;
@@ -114,7 +49,6 @@ struct MotionPairCandidates {
     std::optional<std::vector<TrianglePair>> pairs;
 };
 
-[[nodiscard]] Aabb aabb(const Triangle& triangle) noexcept;
 [[nodiscard]] Aabb motion_aabb(const InitialTriangle& triangle) noexcept;
 void calculate_motion_bounds(
     std::span<const InitialTriangle> initial,

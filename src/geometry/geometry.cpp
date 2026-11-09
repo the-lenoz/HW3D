@@ -2,13 +2,11 @@ module;
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <new>
-#include <numbers>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -165,131 +163,6 @@ float outward_max(const double value) noexcept
     return result;
 }
 
-using RotationMatrix = std::array<std::array<double, 3>, 3>;
-
-RotationMatrix rotation_matrix(
-    const DVec3& axis,
-    const double angle) noexcept
-{
-    const double x = axis.x;
-    const double y = axis.y;
-    const double z = axis.z;
-    const double cosine = std::cos(angle);
-    const double sine = std::sin(angle);
-    const double complement = 1.0 - cosine;
-
-    return {{
-        {{cosine + x * x * complement,
-          x * y * complement - z * sine,
-          x * z * complement + y * sine}},
-        {{y * x * complement + z * sine,
-          cosine + y * y * complement,
-          y * z * complement - x * sine}},
-        {{z * x * complement - y * sine,
-          z * y * complement + x * sine,
-          cosine + z * z * complement}},
-    }};
-}
-
-DVec3 normalized_rotation_axis(const Vec3& axis)
-{
-    const double length = std::hypot(
-        static_cast<double>(axis.x),
-        static_cast<double>(axis.y),
-        static_cast<double>(axis.z));
-    if (!std::isfinite(length) || length == 0.0) {
-        throw std::invalid_argument(
-            "rotation axis direction must be finite and non-zero");
-    }
-    return {
-        static_cast<double>(axis.x) / length,
-        static_cast<double>(axis.y) / length,
-        static_cast<double>(axis.z) / length,
-    };
-}
-
-Vec3 rotate_vertex(
-    const Vec3& vertex,
-    const Vec3& origin,
-    const RotationMatrix& matrix) noexcept
-{
-    const std::array<double, 3> radius{
-        static_cast<double>(vertex.x) - origin.x,
-        static_cast<double>(vertex.y) - origin.y,
-        static_cast<double>(vertex.z) - origin.z,
-    };
-
-    return {
-        static_cast<float>(origin.x
-            + std::inner_product(
-                matrix[0].begin(), matrix[0].end(), radius.begin(), 0.0)),
-        static_cast<float>(origin.y
-            + std::inner_product(
-                matrix[1].begin(), matrix[1].end(), radius.begin(), 0.0)),
-        static_cast<float>(origin.z
-            + std::inner_product(
-                matrix[2].begin(), matrix[2].end(), radius.begin(), 0.0)),
-    };
-}
-
-}
-
-void update_vertices(
-    const std::span<const InitialTriangle> initial,
-    const std::span<Triangle> current,
-    const std::chrono::duration<double> elapsed)
-{
-    const double elapsed_seconds = elapsed.count();
-    if (initial.size() != current.size()) {
-        throw std::invalid_argument(
-            "initial and current triangle counts must match");
-    }
-    if (!std::isfinite(elapsed_seconds) || elapsed_seconds < 0.0) {
-        throw std::invalid_argument(
-            "elapsed simulation time must be finite and non-negative");
-    }
-
-    constexpr double full_turn = 2.0 * std::numbers::pi_v<double>;
-    for (std::size_t index = 0; index < initial.size(); ++index) {
-        const InitialTriangle& source = initial[index];
-        Triangle& destination = current[index];
-
-        if (source.angular_velocity_radians_per_second == 0.0F) {
-            destination.a = source.a;
-            destination.b = source.b;
-            destination.c = source.c;
-            continue;
-        }
-
-        if (!finite(source.rotation_axis_origin)) {
-            throw std::invalid_argument(
-                "rotation axis origin must be finite");
-        }
-        const DVec3 normalized_axis = normalized_rotation_axis(
-            source.rotation_axis_direction);
-
-        const double angle = std::remainder(
-            static_cast<double>(
-                source.angular_velocity_radians_per_second)
-                * elapsed_seconds,
-            full_turn);
-        if (angle == 0.0) {
-            destination.a = source.a;
-            destination.b = source.b;
-            destination.c = source.c;
-            continue;
-        }
-
-        const RotationMatrix matrix = rotation_matrix(
-            normalized_axis,
-            angle);
-        destination.a = rotate_vertex(
-            source.a, source.rotation_axis_origin, matrix);
-        destination.b = rotate_vertex(
-            source.b, source.rotation_axis_origin, matrix);
-        destination.c = rotate_vertex(
-            source.c, source.rotation_axis_origin, matrix);
-    }
 }
 
 std::size_t VoxelHash::operator()(const Voxel& voxel) const noexcept
@@ -305,22 +178,6 @@ std::size_t VoxelHash::operator()(const Voxel& voxel) const noexcept
     const std::uint64_t y = mix(static_cast<std::uint64_t>(voxel.y));
     const std::uint64_t z = mix(static_cast<std::uint64_t>(voxel.z));
     return static_cast<std::size_t>(x ^ (y << 1U) ^ (z << 7U));
-}
-
-Aabb aabb(const Triangle& triangle) noexcept
-{
-    return {
-        .minimum = {
-            std::min({triangle.a.x, triangle.b.x, triangle.c.x}),
-            std::min({triangle.a.y, triangle.b.y, triangle.c.y}),
-            std::min({triangle.a.z, triangle.b.z, triangle.c.z}),
-        },
-        .maximum = {
-            std::max({triangle.a.x, triangle.b.x, triangle.c.x}),
-            std::max({triangle.a.y, triangle.b.y, triangle.c.y}),
-            std::max({triangle.a.z, triangle.b.z, triangle.c.z}),
-        },
-    };
 }
 
 Aabb motion_aabb(const InitialTriangle& triangle) noexcept
@@ -644,28 +501,6 @@ MotionPairCandidates make_motion_pair_candidates(
         }
     }
     return result;
-}
-
-bool is_degenerate(const Triangle& triangle)
-{
-    const Vector2<float> a_xy{triangle.a.x, triangle.a.y};
-    const Vector2<float> b_xy{triangle.b.x, triangle.b.y};
-    const Vector2<float> c_xy{triangle.c.x, triangle.c.y};
-    if (orient2d(a_xy, b_xy, c_xy) != Sign::zero) {
-        return false;
-    }
-
-    const Vector2<float> a_xz{triangle.a.x, triangle.a.z};
-    const Vector2<float> b_xz{triangle.b.x, triangle.b.z};
-    const Vector2<float> c_xz{triangle.c.x, triangle.c.z};
-    if (orient2d(a_xz, b_xz, c_xz) != Sign::zero) {
-        return false;
-    }
-
-    const Vector2<float> a_yz{triangle.a.y, triangle.a.z};
-    const Vector2<float> b_yz{triangle.b.y, triangle.b.z};
-    const Vector2<float> c_yz{triangle.c.y, triangle.c.z};
-    return orient2d(a_yz, b_yz, c_yz) == Sign::zero;
 }
 
 }

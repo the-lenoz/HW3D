@@ -1,142 +1,140 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(HW3D LANGUAGES C CXX)
-
-set(HW3D_SHADER_HEADER
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_shaders.hpp")
-set(HW3D_RENDERER_VERTEX_SHADER
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.vert.glsl")
-set(HW3D_RENDERER_FRAGMENT_SHADER
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.frag.glsl")
-set(HW3D_COMPUTE_SHADER
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_intersections/shaders/intersections.comp.glsl")
-set(HW3D_VERTEX_UPDATE_SHADER
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_triangles/shaders/update_vertices.comp.glsl")
-set(HW3D_SHADER_GENERATOR
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shaders.cmake")
-
-# IDEs index the target after configuration, before the first build.
-if(NOT EXISTS "${HW3D_SHADER_HEADER}")
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}"
-            "-DVERTEX_SHADER=${HW3D_RENDERER_VERTEX_SHADER}"
-            "-DFRAGMENT_SHADER=${HW3D_RENDERER_FRAGMENT_SHADER}"
-            "-DCOMPUTE_SHADER=${HW3D_COMPUTE_SHADER}"
-            "-DVERTEX_UPDATE_SHADER=${HW3D_VERTEX_UPDATE_SHADER}"
-            "-DOUTPUT_HEADER=${HW3D_SHADER_HEADER}"
-            -P "${HW3D_SHADER_GENERATOR}"
-        COMMAND_ERROR_IS_FATAL ANY
-    )
-endif()
+project(HW3D LANGUAGES CXX)
 
 include(FetchContent)
 include(CTest)
-
-FetchContent_Declare(
-    glad
-    GIT_REPOSITORY https://github.com/Dav1dde/glad.git
-    GIT_TAG v2.0.8
-    GIT_SHALLOW TRUE
-)
-
-FetchContent_MakeAvailable(glad)
-add_subdirectory("${glad_SOURCE_DIR}/cmake" glad_cmake)
-glad_add_library(
-    hw3d_glad
-    STATIC
-    REPRODUCIBLE
-    API gl:core=4.6
-    EXTENSIONS NONE
-)
-
-find_package(glfw3 3.3 REQUIRED)
-find_package(OpenGL REQUIRED)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(hw3d_modules STATIC)
+set(VULKAN_HEADERS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_MODULE OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    VulkanHeaders
+    GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+    GIT_TAG v1.4.363
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(VulkanHeaders)
 
+find_library(HW3D_VULKAN_LOADER NAMES vulkan REQUIRED)
+add_library(hw3d_vulkan_loader SHARED IMPORTED GLOBAL)
+set_target_properties(
+    hw3d_vulkan_loader
+    PROPERTIES IMPORTED_LOCATION "${HW3D_VULKAN_LOADER}")
+
+find_package(glfw3 3.3 REQUIRED)
+find_program(HW3D_GLSLC glslc REQUIRED)
+find_program(HW3D_SPIRV_VAL spirv-val)
+
+set(HW3D_SHADER_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_triangles/shaders/update_vertices.comp.glsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_intersections/shaders/intersections.comp.glsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.vert.glsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders/triangle.frag.glsl"
+)
+set(HW3D_SHADER_SYMBOLS
+    update_vertices_comp_spv
+    intersections_comp_spv
+    triangle_vert_spv
+    triangle_frag_spv
+)
+set(HW3D_SHADER_STAGES
+    compute
+    compute
+    vertex
+    fragment
+)
+set(HW3D_SPIRV_FILES)
+list(LENGTH HW3D_SHADER_SOURCES shader_count)
+math(EXPR last_shader "${shader_count} - 1")
+foreach(index RANGE 0 ${last_shader})
+    list(GET HW3D_SHADER_SOURCES ${index} source)
+    list(GET HW3D_SHADER_SYMBOLS ${index} symbol)
+    list(GET HW3D_SHADER_STAGES ${index} stage)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/generated/${symbol}.spv")
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        COMMAND "${HW3D_GLSLC}" --target-env=vulkan1.4
+            "-fshader-stage=${stage}"
+            -O "${source}" -o "${output}"
+        DEPENDS "${source}"
+        COMMENT "Compiling ${source} to SPIR-V"
+        VERBATIM
+    )
+    if(HW3D_SPIRV_VAL)
+        add_custom_command(
+            OUTPUT "${output}.validated"
+            COMMAND "${HW3D_SPIRV_VAL}" --target-env vulkan1.4 "${output}"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${output}.validated"
+            DEPENDS "${output}"
+            COMMENT "Validating ${output}"
+            VERBATIM
+        )
+        list(APPEND HW3D_SPIRV_VALIDATION_FILES "${output}.validated")
+    endif()
+    list(APPEND HW3D_SPIRV_FILES "${output}")
+endforeach()
+
+set(HW3D_SHADER_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_spirv.hpp")
+string(JOIN "|" HW3D_SPIRV_FILES_ARGUMENT ${HW3D_SPIRV_FILES})
+string(JOIN "|" HW3D_SHADER_SYMBOLS_ARGUMENT ${HW3D_SHADER_SYMBOLS})
 add_custom_command(
     OUTPUT "${HW3D_SHADER_HEADER}"
     COMMAND "${CMAKE_COMMAND}"
-        "-DVERTEX_SHADER=${HW3D_RENDERER_VERTEX_SHADER}"
-        "-DFRAGMENT_SHADER=${HW3D_RENDERER_FRAGMENT_SHADER}"
-        "-DCOMPUTE_SHADER=${HW3D_COMPUTE_SHADER}"
-        "-DVERTEX_UPDATE_SHADER=${HW3D_VERTEX_UPDATE_SHADER}"
+        "-DSPIRV_FILES=${HW3D_SPIRV_FILES_ARGUMENT}"
+        "-DSYMBOLS=${HW3D_SHADER_SYMBOLS_ARGUMENT}"
         "-DOUTPUT_HEADER=${HW3D_SHADER_HEADER}"
-        -P "${HW3D_SHADER_GENERATOR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
     DEPENDS
-        "${HW3D_RENDERER_VERTEX_SHADER}"
-        "${HW3D_RENDERER_FRAGMENT_SHADER}"
-        "${HW3D_COMPUTE_SHADER}"
-        "${HW3D_VERTEX_UPDATE_SHADER}"
-        "${HW3D_SHADER_GENERATOR}"
-    COMMENT "Embedding GLSL shaders"
+        ${HW3D_SPIRV_FILES}
+        ${HW3D_SPIRV_VALIDATION_FILES}
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+    COMMENT "Embedding SPIR-V"
     VERBATIM
 )
-add_custom_target(hw3d_shader_header
-    DEPENDS "${HW3D_SHADER_HEADER}")
-add_dependencies(hw3d_modules hw3d_shader_header)
+add_custom_target(hw3d_spirv DEPENDS "${HW3D_SHADER_HEADER}")
 
+add_library(hw3d_modules STATIC)
+add_dependencies(hw3d_modules hw3d_spirv)
 target_sources(
     hw3d_modules
     PRIVATE
         src/configuration/configuration.cpp
         src/geometry/geometry.cpp
-        src/geometry/expansion.cpp
-        src/geometry/robust_predicates.cpp
         src/window_context/window_context.cpp
-        src/shader_program/shader_program.cpp
-        src/gpu_triangles/gpu_triangles.cpp
-        src/renderer/renderer.cpp
-        src/cpu_intersections/cpu_intersections.cpp
-        src/gpu_intersections/gpu_intersections.cpp
+        src/gpu_pipeline/gpu_pipeline.cpp
         "${HW3D_SHADER_HEADER}"
     PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
             src/configuration/configuration.cppm
             src/geometry/geometry.cppm
             src/window_context/window_context.cppm
-            src/shader_program/shader_program.cppm
-            src/gpu_triangles/gpu_triangles.cppm
-            src/renderer/renderer.cppm
-            src/cpu_intersections/cpu_intersections.cppm
-            src/gpu_intersections/gpu_intersections.cppm
+            src/gpu_pipeline/gpu_pipeline.cppm
 )
-
-target_include_directories(hw3d_modules
+target_include_directories(
+    hw3d_modules
     PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set_source_files_properties(
-        src/geometry/expansion.cpp
-        src/geometry/robust_predicates.cpp
-        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
-    )
-elseif(MSVC)
-    set_source_files_properties(
-        src/geometry/expansion.cpp
-        src/geometry/robust_predicates.cpp
-        PROPERTIES COMPILE_OPTIONS "/fp:strict"
-    )
-endif()
-
 target_link_libraries(
     hw3d_modules
+    PRIVATE Vulkan::Headers hw3d_vulkan_loader glfw)
+target_compile_definitions(
+    hw3d_modules
     PRIVATE
-        hw3d_glad
-        glfw
-        OpenGL::GL
-)
+        VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+        $<$<CONFIG:Debug>:HW3D_DEBUG_VALIDATION=1>)
 
 add_executable(hw3d src/main.cpp)
 target_link_libraries(hw3d PRIVATE hw3d_modules)
 
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
@@ -146,194 +144,63 @@ if(BUILD_TESTING)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
 
-    find_program(HW3D_XVFB_RUN_EXECUTABLE xvfb-run)
-
     function(add_hw3d_test target source)
         add_executable(${target} ${source})
         target_link_libraries(
-            ${target}
-            PRIVATE
-                hw3d_modules
-                GTest::gtest_main
-        )
+            ${target} PRIVATE hw3d_modules GTest::gtest_main)
         add_test(NAME ${target} COMMAND ${target})
         set_tests_properties(${target} PROPERTIES LABELS unit)
     endfunction()
 
-    function(add_hw3d_gl_test target source)
-        add_executable(${target} ${source})
-        target_link_libraries(
-            ${target}
-            PRIVATE
-                hw3d_modules
-                hw3d_glad
-                GTest::gtest_main
-        )
-
-        if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
-            add_test(
-                NAME ${target}
-                COMMAND
-                    "${HW3D_XVFB_RUN_EXECUTABLE}"
-                    -a
-                    "$<TARGET_FILE:${target}>"
-            )
-        else()
-            add_test(NAME ${target} COMMAND ${target})
-        endif()
-        set_tests_properties(${target} PROPERTIES LABELS unit)
-    endfunction()
-
-    add_hw3d_test(
-        configuration_tests
-        tests/configuration_tests.cpp
-    )
-    add_hw3d_test(
-        geometry_tests
-        tests/geometry_tests.cpp
-    )
-    add_hw3d_test(
-        robust_geometry_tests
-        tests/robust_geometry_tests.cpp
-    )
-    add_hw3d_test(
-        cpu_intersections_tests
-        tests/cpu_intersections_tests.cpp
-    )
-    add_hw3d_gl_test(
-        window_context_tests
-        tests/window_context_tests.cpp
-    )
-    target_link_libraries(window_context_tests PRIVATE glfw)
-    add_hw3d_gl_test(
-        shader_program_tests
-        tests/shader_program_tests.cpp
-    )
-    add_hw3d_gl_test(
-        gpu_triangles_tests
-        tests/gpu_triangles_tests.cpp
-    )
-    add_hw3d_gl_test(
-        renderer_tests
-        tests/renderer_tests.cpp
-    )
-    add_hw3d_gl_test(
-        gpu_intersections_tests
-        tests/gpu_intersections_tests.cpp
-    )
-    target_include_directories(
-        gpu_intersections_tests
-        PRIVATE
-            "${CMAKE_CURRENT_BINARY_DIR}/generated"
-    )
-    add_dependencies(gpu_intersections_tests hw3d_shader_header)
-
-    set(HW3D_HEADLESS_E2E_SCRIPT
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_e2e.py")
-    set(HW3D_WINDOWED_E2E_SCRIPT
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windowed_e2e.py")
+    add_hw3d_test(configuration_tests tests/configuration_tests.cpp)
+    add_hw3d_test(geometry_tests tests/geometry_tests.cpp)
 
     add_test(
-        NAME headless_cpu_e2e
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${HW3D_HEADLESS_E2E_SCRIPT}"
-            --binary "$<TARGET_FILE:hw3d>"
-            --backend cpu
-    )
-
-    if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
-        add_test(
-            NAME headless_gpu_e2e
-            COMMAND
-                "${HW3D_XVFB_RUN_EXECUTABLE}"
-                -a
-                "${Python3_EXECUTABLE}"
-                "${HW3D_HEADLESS_E2E_SCRIPT}"
-                --binary "$<TARGET_FILE:hw3d>"
-                --backend gpu
-        )
-    else()
-        add_test(
-            NAME headless_gpu_e2e
-            COMMAND
-                "${Python3_EXECUTABLE}"
-                "${HW3D_HEADLESS_E2E_SCRIPT}"
-                --binary "$<TARGET_FILE:hw3d>"
-                --backend gpu
-        )
-    endif()
-
+        NAME cli_e2e
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_e2e.py"
+            --binary "$<TARGET_FILE:hw3d>")
     set_tests_properties(
-        headless_cpu_e2e
+        cli_e2e
         PROPERTIES
             LABELS e2e
-            TIMEOUT 180
-            ENVIRONMENT_MODIFICATION
-                "DISPLAY=unset:;WAYLAND_DISPLAY=unset:"
-    )
-    set_tests_properties(
-        headless_gpu_e2e
-        PROPERTIES
-            LABELS e2e
-            RUN_SERIAL TRUE
-            TIMEOUT 180
-            ENVIRONMENT_MODIFICATION "WAYLAND_DISPLAY=unset:"
-    )
-
-    set(HW3D_WINDOWED_E2E_COMMAND
-        "${Python3_EXECUTABLE}"
-        "${HW3D_WINDOWED_E2E_SCRIPT}")
-    if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
-        list(PREPEND HW3D_WINDOWED_E2E_COMMAND
-            "${HW3D_XVFB_RUN_EXECUTABLE}" -a)
-    endif()
-    add_test(
-        NAME windowed_cpu_e2e
-        COMMAND ${HW3D_WINDOWED_E2E_COMMAND}
-            --binary "$<TARGET_FILE:hw3d>"
-            --backend cpu
-    )
-    add_test(
-        NAME windowed_gpu_e2e
-        COMMAND ${HW3D_WINDOWED_E2E_COMMAND}
-            --binary "$<TARGET_FILE:hw3d>"
-            --backend gpu
-    )
-    add_test(
-        NAME generate_triangles_e2e
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_triangles_tests.py"
-            --generator "${CMAKE_CURRENT_SOURCE_DIR}/generate_triangles.py"
-            --binary "$<TARGET_FILE:hw3d>"
-    )
-    set_tests_properties(
-        windowed_cpu_e2e
-        windowed_gpu_e2e
-        PROPERTIES
-            LABELS e2e
-            RUN_SERIAL TRUE
             TIMEOUT 30
-            ENVIRONMENT_MODIFICATION "WAYLAND_DISPLAY=unset:"
-    )
+            ENVIRONMENT_MODIFICATION
+                "DISPLAY=unset:;WAYLAND_DISPLAY=unset:")
+
+    find_program(HW3D_XVFB_RUN_EXECUTABLE xvfb-run)
+    set(windowed_command
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windowed_e2e.py"
+        --binary "$<TARGET_FILE:hw3d>")
+    if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
+        list(PREPEND windowed_command "${HW3D_XVFB_RUN_EXECUTABLE}" -a)
+    endif()
+    add_test(NAME windowed_vulkan_e2e COMMAND ${windowed_command})
+    set_tests_properties(
+        windowed_vulkan_e2e
+        PROPERTIES
+            LABELS e2e
+            RUN_SERIAL TRUE
+            TIMEOUT 60
+            ENVIRONMENT_MODIFICATION
+                "WAYLAND_DISPLAY=unset:;HW3D_DISABLE_VALIDATION=set:1")
+
+    set(generator_command
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_triangles_tests.py"
+        --generator "${CMAKE_CURRENT_SOURCE_DIR}/generate_triangles.py"
+        --binary "$<TARGET_FILE:hw3d>")
+    if(HW3D_XVFB_RUN_EXECUTABLE AND "$ENV{DISPLAY}" STREQUAL "")
+        list(PREPEND generator_command "${HW3D_XVFB_RUN_EXECUTABLE}" -a)
+    endif()
+    add_test(NAME generate_triangles_e2e COMMAND ${generator_command})
     set_tests_properties(
         generate_triangles_e2e
         PROPERTIES
             LABELS e2e
+            RUN_SERIAL TRUE
             TIMEOUT 60
             ENVIRONMENT_MODIFICATION
-                "DISPLAY=unset:;WAYLAND_DISPLAY=unset:"
-    )
-
-    set_tests_properties(
-        window_context_tests
-        shader_program_tests
-        gpu_triangles_tests
-        renderer_tests
-        gpu_intersections_tests
-        PROPERTIES
-            RUN_SERIAL TRUE
-            ENVIRONMENT_MODIFICATION "WAYLAND_DISPLAY=unset:"
-    )
+                "WAYLAND_DISPLAY=unset:;HW3D_DISABLE_VALIDATION=set:1")
 endif()
